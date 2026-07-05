@@ -1,6 +1,35 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { requireUser, requireWorkerToken } from "./lib/auth";
+
+// Admin edits from the CLI (internal functions bypass Clerk), e.g.:
+//   npx convex run stores:updateByLoginRef '{"loginRef":"tienda-kay","domain":"tiendakay.com.ar"}'
+export const updateByLoginRef = internalMutation({
+  args: {
+    loginRef: v.string(),
+    domain: v.optional(v.string()),
+    executorOverride: v.optional(
+      v.union(v.literal("stagehand"), v.literal("harness")),
+    ),
+    active: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const store = await ctx.db
+      .query("stores")
+      .filter((q) => q.eq(q.field("login_ref"), args.loginRef))
+      .unique();
+    if (!store) throw new Error(`No store with login_ref "${args.loginRef}"`);
+    await ctx.db.patch(store._id, {
+      ...(args.domain !== undefined ? { domain: args.domain } : {}),
+      ...(args.executorOverride !== undefined
+        ? { executor_override: args.executorOverride }
+        : {}),
+      ...(args.active !== undefined ? { active: args.active } : {}),
+      updated_at: Date.now(),
+    });
+    return { storeId: store._id, name: store.name };
+  },
+});
 
 export const list = query({
   args: { includeInactive: v.optional(v.boolean()) },
