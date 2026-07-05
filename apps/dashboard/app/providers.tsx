@@ -1,10 +1,13 @@
 "use client";
 
 import { type ReactNode, useMemo } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { ConvexProvider, ConvexReactClient } from "convex/react";
+import { ConvexProviderWithClerk } from "convex/react-clerk";
 
 export function Providers({ children }: { children: ReactNode }) {
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+  const clerkEnabled = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
   const client = useMemo(
     () => (convexUrl ? new ConvexReactClient(convexUrl) : null),
     [convexUrl],
@@ -19,6 +22,14 @@ export function Providers({ children }: { children: ReactNode }) {
           the dashboard.
         </p>
       </div>
+    );
+  }
+
+  if (clerkEnabled) {
+    return (
+      <ConvexProviderWithClerk client={client} useAuth={useAuth}>
+        {children}
+      </ConvexProviderWithClerk>
     );
   }
 

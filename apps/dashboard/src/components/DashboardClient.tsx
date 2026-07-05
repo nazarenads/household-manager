@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import {
   AlertTriangle,
   CalendarClock,
@@ -44,7 +45,13 @@ type Cart = {
   _id: Id<"carts">;
   store_id: Id<"stores">;
   status: string;
-  lines: Array<{ item_id: Id<"items">; qty: number; note?: string }>;
+  lines: Array<{
+    item_id: Id<"items">;
+    store_item_id?: Id<"store_items">;
+    qty: number;
+    expected_unit_price?: number;
+    note?: string;
+  }>;
 };
 
 type Job = {
@@ -105,6 +112,7 @@ type AiConfig = {
 const platforms = ["tiendanube", "mercadolibre", "coto", "vtex"] as const;
 const executors = ["stagehand", "harness"] as const;
 const aiTiers = ["parser", "executor", "explorer"] as const;
+const receiptRows = [0, 1, 2] as const;
 
 function asList<T>(value: T[] | undefined): T[] {
   return value ?? [];
@@ -129,6 +137,7 @@ function formatDate(value?: number) {
 }
 
 export function DashboardClient() {
+  const clerkEnabled = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
   const stock = asList(
     useQuery(api.stock.current, {}) as StockRow[] | undefined,
   );
@@ -155,8 +164,12 @@ export function DashboardClient() {
   const upsertStore = useMutation(api.stores.upsert);
   const upsertItem = useMutation(api.items.upsert);
   const createCart = useMutation(api.carts.createProposed);
+  const updateCartLines = useMutation(api.carts.updateLines);
   const approveCart = useMutation(api.carts.approve);
+  const cancelCart = useMutation(api.carts.cancel);
   const queueCart = useMutation(api.carts.queueApproved);
+  const confirmJob = useMutation(api.jobs.confirm);
+  const markLedgerReceived = useMutation(api.ledger.markReceived);
   const setExecutorConfig = useMutation(api.config.setExecutorConfig);
   const setAiConfig = useMutation(api.config.setAiConfig);
 
@@ -260,6 +273,78 @@ export function DashboardClient() {
     });
   }
 
+  async function handleUpdateCart(
+    event: FormEvent<HTMLFormElement>,
+    cart: Cart,
+  ) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const lines = cart.lines
+      .map((line, index) => {
+        const itemId = String(form.get(`line-${index}-item`) ?? "");
+        const qty = Number(form.get(`line-${index}-qty`) ?? 0);
+        if (!itemId || qty <= 0) return null;
+        return {
+          item_id: itemId as Id<"items">,
+          ...(line.store_item_id ? { store_item_id: line.store_item_id } : {}),
+          qty,
+          ...(line.expected_unit_price
+            ? { expected_unit_price: line.expected_unit_price }
+            : {}),
+          ...(line.note ? { note: line.note } : {}),
+        };
+      })
+      .filter((line): line is NonNullable<typeof line> => Boolean(line));
+
+    const addItemId = String(form.get("addItem") ?? "");
+    const addQty = Number(form.get("addQty") ?? 0);
+    if (addItemId && addQty > 0) {
+      lines.push({ item_id: addItemId as Id<"items">, qty: addQty });
+    }
+    if (lines.length === 0) {
+      setMessage("A cart needs at least one line");
+      return;
+    }
+
+    await run("Cart lines saved", async () => {
+      await updateCartLines({ id: cart._id, lines });
+    });
+  }
+
+  async function handleReceiveLedger(
+    event: FormEvent<HTMLFormElement>,
+    entry: LedgerEntry,
+  ) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const received_items = receiptRows
+      .map((index) => {
+        const itemId = String(form.get(`receiveItem-${index}`) ?? "");
+        const qty = Number(form.get(`receiveQty-${index}`) ?? 0);
+        if (!itemId || qty <= 0) return null;
+        return {
+          item_id: itemId as Id<"items">,
+          qty,
+          note: `Received for ${entry.store?.name ?? "ledger entry"}`,
+        };
+      })
+      .filter((line): line is NonNullable<typeof line> => Boolean(line));
+    if (received_items.length === 0) {
+      setMessage("Choose at least one received item and quantity");
+      return;
+    }
+
+    const receiptRef = String(form.get("receiptRef") ?? "").trim();
+    await run("Ledger received", async () => {
+      await markLedgerReceived({
+        id: entry._id,
+        received_items,
+        ...(receiptRef ? { receipt_ref: receiptRef } : {}),
+      });
+      event.currentTarget.reset();
+    });
+  }
+
   async function handleExecutorConfig(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -304,7 +389,7 @@ export function DashboardClient() {
     });
   }
 
-  return (
+  const app = (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
@@ -355,6 +440,7 @@ export function DashboardClient() {
             <span className="badge">
               <ClipboardCheck size={14} /> {ledger.length} ledger
             </span>
+            {clerkEnabled ? <UserButton /> : null}
           </div>
         </header>
 
@@ -560,8 +646,8 @@ export function DashboardClient() {
                 <div className="empty">No carts yet.</div>
               ) : null}
               {carts.map((cart) => (
-                <div className="job-row" key={cart._id}>
-                  <div>
+                <div className="job-row tall-row" key={cart._id}>
+                  <div className="cart-body">
                     <div className="row-title">
                       {storeById.get(cart.store_id)?.name ?? "Unknown store"}
                     </div>
@@ -574,6 +660,68 @@ export function DashboardClient() {
                         )
                         .join(", ")}
                     </div>
+                    {["proposed", "approved"].includes(cart.status) ? (
+                      <form
+                        className="cart-edit-form"
+                        onSubmit={(event) => handleUpdateCart(event, cart)}
+                      >
+                        {cart.lines.map((line, index) => (
+                          <div
+                            className="cart-edit-line"
+                            key={`${cart._id}-${index}`}
+                          >
+                            <select
+                              name={`line-${index}-item`}
+                              aria-label={`Cart line ${index + 1} item`}
+                              defaultValue={line.item_id}
+                            >
+                              {itemOptions.map((item) => (
+                                <option key={item._id} value={item._id}>
+                                  {item.name}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              name={`line-${index}-qty`}
+                              aria-label={`Cart line ${index + 1} quantity`}
+                              type="number"
+                              min="0"
+                              step="1"
+                              defaultValue={line.qty}
+                            />
+                          </div>
+                        ))}
+                        <div className="cart-edit-line">
+                          <select
+                            name="addItem"
+                            aria-label="Add cart line item"
+                            defaultValue=""
+                          >
+                            <option value="">Add item</option>
+                            {itemOptions.map((item) => (
+                              <option key={item._id} value={item._id}>
+                                {item.name}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            name="addQty"
+                            aria-label="Add cart line quantity"
+                            type="number"
+                            min="0"
+                            step="1"
+                            defaultValue="1"
+                          />
+                        </div>
+                        <button
+                          className="text-btn"
+                          type="submit"
+                          disabled={pending !== null}
+                        >
+                          Save lines
+                        </button>
+                      </form>
+                    ) : null}
                   </div>
                   <div className="actions">
                     {cart.status === "proposed" ? (
@@ -606,6 +754,24 @@ export function DashboardClient() {
                         <ShoppingCart size={18} />
                       </button>
                     ) : null}
+                    {["proposed", "approved"].includes(cart.status) ? (
+                      <button
+                        className="icon-btn danger"
+                        type="button"
+                        aria-label="Cancel cart"
+                        disabled={pending !== null}
+                        onClick={() =>
+                          run("Cart cancelled", () =>
+                            cancelCart({
+                              id: cart._id,
+                              note: "Cancelled from dashboard",
+                            }),
+                          )
+                        }
+                      >
+                        <RotateCcw size={17} />
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -632,7 +798,24 @@ export function DashboardClient() {
                       {job.error ? ` · ${job.error}` : ""}
                     </div>
                   </div>
-                  <span className="badge">{job.status}</span>
+                  <div className="actions">
+                    <span className="badge">{job.status}</span>
+                    {job.status === "awaiting_confirm" ? (
+                      <button
+                        className="icon-btn primary"
+                        type="button"
+                        aria-label="Confirm order placement"
+                        disabled={pending !== null}
+                        onClick={() =>
+                          run("Job confirmed", () =>
+                            confirmJob({ job_id: job._id }),
+                          )
+                        }
+                      >
+                        <Check size={18} />
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               ))}
             </div>
@@ -666,6 +849,51 @@ export function DashboardClient() {
                         )
                         .join(", ")}
                     </div>
+                    {entry.status === "placed" ? (
+                      <form
+                        className="receive-form"
+                        onSubmit={(event) => handleReceiveLedger(event, entry)}
+                      >
+                        <input
+                          name="receiptRef"
+                          placeholder="receipt ref"
+                          aria-label="Receipt reference"
+                        />
+                        {receiptRows.map((index) => (
+                          <div className="receipt-line" key={index}>
+                            <select
+                              name={`receiveItem-${index}`}
+                              aria-label={`Received item ${index + 1}`}
+                              defaultValue=""
+                            >
+                              <option value="">Received item</option>
+                              {itemOptions.map((item) => (
+                                <option key={item._id} value={item._id}>
+                                  {item.name}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              name={`receiveQty-${index}`}
+                              aria-label={`Received quantity ${index + 1}`}
+                              type="number"
+                              min="0"
+                              step="1"
+                              defaultValue={
+                                entry.line_items[index]?.qty ?? undefined
+                              }
+                            />
+                          </div>
+                        ))}
+                        <button
+                          className="text-btn primary"
+                          type="submit"
+                          disabled={pending !== null}
+                        >
+                          Mark received
+                        </button>
+                      </form>
+                    ) : null}
                   </div>
                   <span className="badge">{entry.status}</span>
                 </div>
@@ -853,5 +1081,27 @@ export function DashboardClient() {
         </section>
       </main>
     </div>
+  );
+
+  if (!clerkEnabled) return app;
+
+  return (
+    <>
+      <SignedOut>
+        <div className="auth-shell">
+          <div className="auth-panel">
+            <ShieldCheck size={28} />
+            <h1>Household Manager</h1>
+            <p>Sign in with an allowed household account to continue.</p>
+            <SignInButton mode="modal">
+              <button className="text-btn primary" type="button">
+                Sign in
+              </button>
+            </SignInButton>
+          </div>
+        </div>
+      </SignedOut>
+      <SignedIn>{app}</SignedIn>
+    </>
   );
 }

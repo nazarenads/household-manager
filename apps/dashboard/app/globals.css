@@ -119,7 +119,8 @@ select {
 }
 
 .notice,
-.config-missing {
+.config-missing,
+.auth-panel {
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -129,6 +130,28 @@ select {
 .config-missing {
   margin: 40px auto;
   max-width: 640px;
+}
+
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-panel {
+  max-width: 420px;
+  display: grid;
+  gap: 12px;
+}
+
+.auth-panel h1,
+.auth-panel p {
+  margin: 0;
+}
+
+.auth-panel p {
+  color: var(--muted);
 }
 
 .badge {
@@ -217,6 +240,7 @@ select {
 .actions {
   display: flex;
   gap: 8px;
+  align-items: start;
 }
 
 .actions button:disabled,
@@ -255,6 +279,30 @@ select {
 
 .danger {
   color: var(--danger);
+}
+
+.cart-body {
+  display: grid;
+  gap: 8px;
+}
+
+.cart-edit-form,
+.receive-form {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.cart-edit-line,
+.receipt-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 82px;
+  gap: 8px;
+}
+
+.receive-form {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .timeline {
@@ -393,7 +441,9 @@ select {
   .form-grid,
   .config-grid,
   .config-form,
-  .ai-config-row {
+  .ai-config-row,
+  .cart-edit-line,
+  .receipt-line {
     grid-template-columns: 1fr;
   }
 

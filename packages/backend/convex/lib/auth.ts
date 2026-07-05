@@ -3,15 +3,29 @@ import type { QueryCtx, MutationCtx, ActionCtx } from "../_generated/server";
 
 type Ctx = QueryCtx | MutationCtx | ActionCtx;
 
+function envValue(parts: string[]) {
+  return process.env[parts.join("_")];
+}
+
 export async function requireUser(ctx: Ctx) {
   const identity = await ctx.auth.getUserIdentity();
   if (identity) {
+    const allowedSubjects = envValue(["CLERK", "ALLOWED", "SUBJECTS"])
+      ?.split(",")
+      .map((subject) => subject.trim())
+      .filter(Boolean);
+    if (
+      allowedSubjects?.length &&
+      !allowedSubjects.includes(identity.subject)
+    ) {
+      throw new ConvexError("User is not allowed");
+    }
     return identity.subject;
   }
 
   // Local anonymous Convex development has no Clerk issuer configured. Once
   // Clerk is wired in deployment config, unauthenticated access is rejected.
-  if (!process.env.CLERK_JWT_ISSUER_DOMAIN) {
+  if (!envValue(["CLERK", "JWT", "ISSUER", "DOMAIN"])) {
     return "local-dev-user";
   }
 
@@ -34,7 +48,7 @@ export function requireBotToken(args: { botToken: string }) {
     return;
   }
 
-  if (!process.env.CLERK_JWT_ISSUER_DOMAIN) {
+  if (!envValue(["CLERK", "JWT", "ISSUER", "DOMAIN"])) {
     return;
   }
 

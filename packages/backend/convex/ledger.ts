@@ -1,5 +1,5 @@
-import { v } from "convex/values";
-import { query } from "./_generated/server";
+import { ConvexError, v } from "convex/values";
+import { mutation, query } from "./_generated/server";
 import { requireUser } from "./lib/auth";
 
 export const list = query({
@@ -47,5 +47,48 @@ export const list = query({
         };
       }),
     );
+  },
+});
+
+export const markReceived = mutation({
+  args: {
+    id: v.id("ledger"),
+    receipt_ref: v.optional(v.string()),
+    received_items: v.array(
+      v.object({
+        item_id: v.id("items"),
+        qty: v.number(),
+        note: v.optional(v.string()),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+    const entry = await ctx.db.get(args.id);
+    if (!entry) throw new ConvexError("Ledger entry not found");
+    if (entry.status === "received") return entry._id;
+
+    const now = Date.now();
+    await ctx.db.patch(entry._id, {
+      status: "received",
+      ...(args.receipt_ref ? { receipt_ref: args.receipt_ref } : {}),
+      received_at: now,
+      updated_at: now,
+    });
+
+    for (const item of args.received_items) {
+      if (item.qty <= 0) continue;
+      await ctx.db.insert("stock_events", {
+        item_id: item.item_id,
+        delta: item.qty,
+        reason: "received",
+        source_user: actor,
+        job_id: entry.job_id,
+        note: item.note ?? `Received from ledger ${entry._id}`,
+        created_at: now,
+      });
+    }
+
+    return entry._id;
   },
 });

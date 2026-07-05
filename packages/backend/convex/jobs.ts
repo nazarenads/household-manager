@@ -430,6 +430,30 @@ export const expireStale = internalMutation({
   args: {},
   handler: async (ctx) => {
     const now = Date.now();
+    const screenshotJobs = await ctx.db.query("purchase_jobs").collect();
+    for (const job of screenshotJobs) {
+      if (
+        job.order_summary_screenshot &&
+        job.order_summary_screenshot_expires_at &&
+        job.order_summary_screenshot_expires_at <= now
+      ) {
+        await ctx.storage.delete(job.order_summary_screenshot);
+        await ctx.db.patch(job._id, {
+          order_summary_screenshot: undefined,
+          order_summary_screenshot_expires_at: undefined,
+          updated_at: now,
+        } as any);
+        await ctx.db.insert("job_events", {
+          job_id: job._id,
+          from_status: job.status,
+          to_status: job.status,
+          actor: "cron",
+          note: "Expired checkout summary screenshot removed",
+          created_at: now,
+        });
+      }
+    }
+
     const awaiting = await ctx.db
       .query("purchase_jobs")
       .withIndex("by_status", (q) => q.eq("status", "awaiting_confirm"))

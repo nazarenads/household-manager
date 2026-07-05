@@ -36,6 +36,20 @@ For this local-only setup, the dashboard uses `apps/dashboard/.env.local` with:
 NEXT_PUBLIC_CONVEX_URL=http://127.0.0.1:3210
 ```
 
+## Dashboard Auth
+
+Local development runs anonymously until Clerk is configured. For deployed
+Phase 1 auth:
+
+1. Create a Clerk app and enable a Convex JWT template named `convex`.
+2. Copy `packages/backend/auth.config.example.ts` to
+   `packages/backend/convex/auth.config.ts`.
+3. Set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in the
+   dashboard environment.
+4. Set `CLERK_JWT_ISSUER_DOMAIN` and `CLERK_ALLOWED_SUBJECTS` in Convex env
+   vars. `CLERK_ALLOWED_SUBJECTS` is a comma-separated list of the two allowed
+   Clerk user subjects.
+
 ## Telegram Bot
 
 Create a bot with BotFather, then run long polling locally or on the VPS:
