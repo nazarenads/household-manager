@@ -177,7 +177,7 @@ guarantees it).
 
 ```bash
 # 1. Launch: profile + CDP persistence
-pnpm --filter @household/worker spike -- launch tienda-kay https://<store-domain>/
+pnpm --filter @household/worker spike launch tienda-kay https://<store-domain>/
 ```
 
 - Prints `Store:`, `Profile:`, and `CDP endpoint:` lines.
@@ -190,14 +190,14 @@ pnpm --filter @household/worker spike -- launch tienda-kay https://<store-domain
 
 ```bash
 # 2. Observe: resolve an instruction to an action and persist it (LLM)
-pnpm --filter @household/worker spike -- observe tienda-kay https://<store-domain>/ \
+pnpm --filter @household/worker spike observe tienda-kay https://<store-domain>/ \
   "Type coffee into the search box and open the first result" action.json
 
 # 3. Replay: must print "Replay succeeded with 0 LLM tokens (zero-LLM confirmed)"
-pnpm --filter @household/worker spike -- replay tienda-kay https://<store-domain>/ action.json
+pnpm --filter @household/worker spike replay tienda-kay https://<store-domain>/ action.json
 
 # 4. Heal: sabotage the selector in action.json (keep the JSON shape), then
-pnpm --filter @household/worker spike -- heal tienda-kay https://<store-domain>/ \
+pnpm --filter @household/worker spike heal tienda-kay https://<store-domain>/ \
   action.json "Type coffee into the search box and open the first result"
 ```
 
