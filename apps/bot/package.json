@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@household/backend": "workspace:*",
     "convex": "^1.42.1",
     "grammy": "^1.38.4",
     "zod": "^4.1.13"

@@ -36,6 +36,24 @@ For this local-only setup, the dashboard uses `apps/dashboard/.env.local` with:
 NEXT_PUBLIC_CONVEX_URL=http://127.0.0.1:3210
 ```
 
+## Telegram Bot
+
+Create a bot with BotFather, then run long polling locally or on the VPS:
+
+```bash
+CONVEX_URL=http://127.0.0.1:3210 \
+TELEGRAM_BOT_TOKEN=... \
+TELEGRAM_ALLOWED_USER_IDS=123456789 \
+pnpm --filter @household/bot dev
+```
+
+Commands include `/stock`, `/low`, `/add <item> [qty]`, `/use <item> [qty]`,
+`/out <item>`, `/set <item> <count>`, `/cart`, and `/jobs`.
+
+For deployed Convex with Clerk enabled, set `BOT_CONVEX_TOKEN` in the bot
+environment and in Convex env vars. The same shared secret pattern can reuse
+`WORKER_TOKEN`, but keeping a separate bot token is cleaner.
+
 ## First VPS Gate
 
 Before real purchases, complete Phase 1.5 from `IMPLEMENTATION_PLAN.md`: provision the VPS, set up noVNC over Tailscale/SSH, verify persistent browser profiles, and record store/IP behavior.

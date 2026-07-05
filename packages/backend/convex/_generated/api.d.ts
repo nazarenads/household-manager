@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as bot from "../bot.js";
 import type * as carts from "../carts.js";
 import type * as config from "../config.js";
 import type * as crons from "../crons.js";
@@ -29,6 +30,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  bot: typeof bot;
   carts: typeof carts;
   config: typeof config;
   crons: typeof crons;

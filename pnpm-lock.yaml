@@ -23,6 +23,9 @@ importers:
 
   apps/bot:
     dependencies:
+      '@household/backend':
+        specifier: workspace:*
+        version: link:../../packages/backend
       convex:
         specifier: ^1.42.1
         version: 1.42.1(@clerk/clerk-react@5.61.8(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)

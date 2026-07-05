@@ -24,3 +24,19 @@ export function requireWorkerToken(args: { workerToken: string }) {
     throw new ConvexError("Invalid worker token");
   }
 }
+
+export function requireBotToken(args: { botToken: string }) {
+  const expected = process.env.BOT_CONVEX_TOKEN ?? process.env.WORKER_TOKEN;
+  if (expected) {
+    if (args.botToken !== expected) {
+      throw new ConvexError("Invalid bot token");
+    }
+    return;
+  }
+
+  if (!process.env.CLERK_JWT_ISSUER_DOMAIN) {
+    return;
+  }
+
+  throw new ConvexError("Bot token is not configured");
+}
