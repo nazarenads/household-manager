@@ -4,6 +4,19 @@ import type { Bot } from "grammy";
 import { api } from "@household/backend/convex/_generated/api";
 import type { Id } from "@household/backend/convex/_generated/dataModel";
 
+/**
+ * Milliseconds until the next Sunday 20:00 America/Argentina/Buenos_Aires
+ * nudge. ART is UTC-3 with no DST, so that is Sunday 23:00 UTC.
+ */
+export function msUntilNextWeeklyNudge(now: Date): number {
+  const target = new Date(now);
+  target.setUTCHours(23, 0, 0, 0);
+  let addDays = (0 - target.getUTCDay() + 7) % 7;
+  if (addDays === 0 && target.getTime() <= now.getTime()) addDays = 7;
+  target.setUTCDate(target.getUTCDate() + addDays);
+  return target.getTime() - now.getTime();
+}
+
 export function startNotifier(
   bot: Bot,
   convexUrl: string,
@@ -38,20 +51,8 @@ export function startNotifier(
   }
 
   function scheduleWeeklyReconciliation() {
-    // Sunday 20:00 America/Argentina/Buenos_Aires = Sunday 23:00 UTC
-    // (ART is UTC-3 with no DST).
-    function calculateNextOccurrence(): number {
-      const now = new Date();
-      const target = new Date(now);
-      target.setUTCHours(23, 0, 0, 0);
-      let addDays = (0 - target.getUTCDay() + 7) % 7;
-      if (addDays === 0 && target.getTime() <= now.getTime()) addDays = 7;
-      target.setUTCDate(target.getUTCDate() + addDays);
-      return target.getTime() - now.getTime();
-    }
-
     function scheduleNext() {
-      const msUntilNext = calculateNextOccurrence();
+      const msUntilNext = msUntilNextWeeklyNudge(new Date());
       console.log(`Next weekly reconciliation in ${msUntilNext}ms`);
 
       setTimeout(async () => {

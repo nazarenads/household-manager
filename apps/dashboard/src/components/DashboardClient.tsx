@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
-import { SignInButton, UserButton } from "@clerk/nextjs";
+import { Component, FormEvent, useMemo, useState, type ReactNode } from "react";
+import { SignInButton, SignOutButton, UserButton } from "@clerk/nextjs";
 import {
   AlertTriangle,
   CalendarClock,
@@ -1350,8 +1350,50 @@ export function DashboardClient() {
         </div>
       </Unauthenticated>
       <Authenticated>
-        <DashboardApp />
+        <NotAllowedBoundary>
+          <DashboardApp />
+        </NotAllowedBoundary>
       </Authenticated>
     </>
   );
+}
+
+/**
+ * A signed-in Clerk user who is not in CLERK_ALLOWED_SUBJECTS gets a
+ * ConvexError("User is not allowed") from every query. Without this
+ * boundary that surfaces as a dev-overlay crash instead of an answer.
+ */
+class NotAllowedBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    const notAllowed = error.message.includes("User is not allowed");
+    return (
+      <div className="auth-shell">
+        <div className="auth-panel">
+          <ShieldCheck size={28} />
+          <h1>Household Manager</h1>
+          <p>
+            {notAllowed
+              ? "This account isn't on the household allowlist. Ask the owner to add your user id to CLERK_ALLOWED_SUBJECTS, then sign in again."
+              : `Something went wrong: ${error.message}`}
+          </p>
+          <SignOutButton>
+            <button className="text-btn primary" type="button">
+              Sign out
+            </button>
+          </SignOutButton>
+        </div>
+      </div>
+    );
+  }
 }

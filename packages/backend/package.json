@@ -19,7 +19,8 @@
     "codegen": "convex codegen",
     "build": "node scripts/codegen-if-configured.mjs",
     "lint": "node scripts/codegen-if-configured.mjs --dry-run",
-    "typecheck": "node scripts/codegen-if-configured.mjs --dry-run"
+    "typecheck": "node scripts/codegen-if-configured.mjs --dry-run",
+    "test": "vitest run"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.8",
@@ -28,6 +29,9 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "@edge-runtime/vm": "^5.0.0",
+    "convex-test": "^0.0.54",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
   }
 }
