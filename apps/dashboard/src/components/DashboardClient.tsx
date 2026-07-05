@@ -3,13 +3,17 @@
 import { FormEvent, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  CalendarClock,
   Check,
   ClipboardCheck,
   Home,
+  ListChecks,
   Minus,
   PackageCheck,
   Plus,
+  ReceiptText,
   RotateCcw,
+  Settings,
   ShieldCheck,
   ShoppingCart,
 } from "lucide-react";
@@ -44,7 +48,7 @@ type Cart = {
 };
 
 type Job = {
-  _id: string;
+  _id: Id<"purchase_jobs">;
   store_id: Id<"stores">;
   status: string;
   executor: string;
@@ -52,10 +56,76 @@ type Job = {
   error?: string;
 };
 
+type LedgerEntry = {
+  _id: Id<"ledger">;
+  status: "placed" | "received" | "adjusted";
+  total: number;
+  currency: "ARS";
+  order_ref?: string;
+  receipt_ref?: string;
+  line_items: Array<{ name: string; qty: number; price: number }>;
+  placed_at: number;
+  received_at?: number;
+  store: { _id: Id<"stores">; name: string; platform: string } | null;
+  job: {
+    _id: Id<"purchase_jobs">;
+    status: string;
+    cart_id: Id<"carts">;
+  } | null;
+};
+
+type AuditEvent = {
+  type: "stock" | "cart" | "job";
+  _id: string;
+  created_at: number;
+  actor: string;
+  title: string;
+  detail: string;
+  note?: string;
+};
+
+type ExecutorConfig = {
+  _id: Id<"executor_config">;
+  default_executor: "stagehand" | "harness";
+  explorer_executor: "stagehand" | "harness";
+  harness_cli?: "claude-code" | "codex";
+  stagehand_model?: string;
+  vps_region: string;
+  default_proxy_policy: "none" | "if_challenged";
+  confirm_timeout_minutes: number;
+};
+
+type AiConfig = {
+  _id: Id<"ai_config">;
+  tier: "parser" | "executor" | "explorer";
+  provider: string;
+  model: string;
+};
+
 const platforms = ["tiendanube", "mercadolibre", "coto", "vtex"] as const;
+const executors = ["stagehand", "harness"] as const;
+const aiTiers = ["parser", "executor", "explorer"] as const;
 
 function asList<T>(value: T[] | undefined): T[] {
   return value ?? [];
+}
+
+function formatMoney(value: number, currency = "ARS") {
+  return new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatDate(value?: number) {
+  if (!value) return "Not set";
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
 }
 
 export function DashboardClient() {
@@ -68,6 +138,17 @@ export function DashboardClient() {
   );
   const carts = asList(useQuery(api.carts.list, {}) as Cart[] | undefined);
   const jobs = asList(useQuery(api.jobs.list, {}) as Job[] | undefined);
+  const ledger = asList(
+    useQuery(api.ledger.list, { limit: 8 }) as LedgerEntry[] | undefined,
+  );
+  const audit = asList(
+    useQuery(api.audit.recent, { limit: 14 }) as AuditEvent[] | undefined,
+  );
+  const executorConfig = useQuery(api.config.getExecutorConfig, {}) as
+    ExecutorConfig | null | undefined;
+  const aiConfig = asList(
+    useQuery(api.config.listAiConfig, {}) as AiConfig[] | undefined,
+  );
 
   const logEvent = useMutation(api.stock.logEvent);
   const reconcile = useMutation(api.stock.reconcile);
@@ -76,6 +157,8 @@ export function DashboardClient() {
   const createCart = useMutation(api.carts.createProposed);
   const approveCart = useMutation(api.carts.approve);
   const queueCart = useMutation(api.carts.queueApproved);
+  const setExecutorConfig = useMutation(api.config.setExecutorConfig);
+  const setAiConfig = useMutation(api.config.setAiConfig);
 
   const [pending, setPending] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -88,6 +171,10 @@ export function DashboardClient() {
   const itemById = useMemo(
     () => new Map(itemOptions.map((item) => [item._id, item])),
     [itemOptions],
+  );
+  const aiConfigByTier = useMemo(
+    () => new Map(aiConfig.map((config) => [config.tier, config])),
+    [aiConfig],
   );
 
   async function run(label: string, action: () => Promise<unknown>) {
@@ -173,6 +260,50 @@ export function DashboardClient() {
     });
   }
 
+  async function handleExecutorConfig(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const id = String(form.get("id") ?? "").trim();
+    const harnessCli = String(form.get("harnessCli") ?? "").trim();
+    const stagehandModel = String(form.get("stagehandModel") ?? "").trim();
+    const payload = {
+      default_executor: String(
+        form.get("defaultExecutor") ?? "stagehand",
+      ) as (typeof executors)[number],
+      explorer_executor: String(
+        form.get("explorerExecutor") ?? "stagehand",
+      ) as (typeof executors)[number],
+      vps_region:
+        String(form.get("vpsRegion") ?? "").trim() || "ar-buenos-aires",
+      default_proxy_policy: String(
+        form.get("proxyPolicy") ?? "if_challenged",
+      ) as "none" | "if_challenged",
+      confirm_timeout_minutes: Number(form.get("confirmTimeout") ?? 30),
+      ...(harnessCli
+        ? { harness_cli: harnessCli as "claude-code" | "codex" }
+        : {}),
+      ...(stagehandModel ? { stagehand_model: stagehandModel } : {}),
+    };
+    await run("Executor config saved", async () => {
+      await setExecutorConfig(
+        id ? { ...payload, id: id as Id<"executor_config"> } : payload,
+      );
+    });
+  }
+
+  async function handleAiConfig(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const tier = String(form.get("tier") ?? "parser") as
+      "parser" | "executor" | "explorer";
+    const provider = String(form.get("provider") ?? "").trim();
+    const model = String(form.get("model") ?? "").trim();
+    if (!provider || !model) return;
+    await run("AI config saved", async () => {
+      await setAiConfig({ tier, provider, model });
+    });
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -194,8 +325,12 @@ export function DashboardClient() {
             Jobs
           </button>
           <button type="button">
-            <ClipboardCheck size={18} />
+            <ReceiptText size={18} />
             Ledger
+          </button>
+          <button type="button">
+            <Settings size={18} />
+            Config
           </button>
         </nav>
       </aside>
@@ -215,7 +350,10 @@ export function DashboardClient() {
             <span className="badge">
               <AlertTriangle size={14} />{" "}
               {jobs.filter((job) => job.status.includes("paused")).length}{" "}
-              checkpoint
+              paused
+            </span>
+            <span className="badge">
+              <ClipboardCheck size={14} /> {ledger.length} ledger
             </span>
           </div>
         </header>
@@ -489,7 +627,7 @@ export function DashboardClient() {
                     <div className="row-note">
                       {job.status} · {job.executor}
                       {job.order_summary_total
-                        ? ` · $${job.order_summary_total}`
+                        ? ` · ${formatMoney(job.order_summary_total)}`
                         : ""}
                       {job.error ? ` · ${job.error}` : ""}
                     </div>
@@ -500,32 +638,214 @@ export function DashboardClient() {
             </div>
           </div>
 
-          <div className="panel span-12">
-            <h2>Reconciliation Sweep</h2>
+          <div className="panel span-7">
+            <h2>Ledger</h2>
+            <div className="job-list">
+              {ledger.length === 0 ? (
+                <div className="empty">No placed orders yet.</div>
+              ) : null}
+              {ledger.map((entry) => (
+                <div className="job-row tall-row" key={entry._id}>
+                  <div>
+                    <div className="row-title">
+                      {entry.store?.name ?? "Unknown store"} ·{" "}
+                      {formatMoney(entry.total, entry.currency)}
+                    </div>
+                    <div className="row-note">
+                      {entry.status} · placed {formatDate(entry.placed_at)}
+                      {entry.received_at
+                        ? ` · received ${formatDate(entry.received_at)}`
+                        : ""}
+                      {entry.order_ref ? ` · ${entry.order_ref}` : ""}
+                    </div>
+                    <div className="line-note">
+                      {entry.line_items
+                        .map(
+                          (line) =>
+                            `${line.name} x${line.qty} (${formatMoney(line.price, entry.currency)})`,
+                        )
+                        .join(", ")}
+                    </div>
+                  </div>
+                  <span className="badge">{entry.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel span-5">
+            <h2>Audit</h2>
             <div className="timeline">
-              <div className="timeline-item">
-                <div className="row-title">
-                  Delivery receipt is separate from checkout
+              {audit.length === 0 ? (
+                <div className="empty">No audit events yet.</div>
+              ) : null}
+              {audit.map((event) => (
+                <div className="timeline-item" key={event._id}>
+                  <div className="timeline-meta">
+                    <span className="badge">{event.type}</span>
+                    <span>
+                      <CalendarClock size={13} /> {formatDate(event.created_at)}
+                    </span>
+                  </div>
+                  <div className="row-title">{event.title}</div>
+                  <div className="row-note">
+                    {event.detail} · {event.actor}
+                    {event.note ? ` · ${event.note}` : ""}
+                  </div>
                 </div>
-                <div className="row-note">
-                  Placed orders enter ledger first; stock changes only on
-                  received/reconciled events.
+              ))}
+            </div>
+          </div>
+
+          <div className="panel span-12">
+            <h2>Config</h2>
+            <div className="config-grid">
+              <div>
+                <div className="section-head">
+                  <Settings size={17} />
+                  Executor
                 </div>
+                {executorConfig === undefined ? (
+                  <div className="empty">Loading configuration.</div>
+                ) : (
+                  <form
+                    className="config-form"
+                    key={executorConfig?._id ?? "new-executor-config"}
+                    onSubmit={handleExecutorConfig}
+                  >
+                    <input
+                      type="hidden"
+                      name="id"
+                      value={executorConfig?._id ?? ""}
+                    />
+                    <label>
+                      Default executor
+                      <select
+                        name="defaultExecutor"
+                        defaultValue={
+                          executorConfig?.default_executor ?? "stagehand"
+                        }
+                      >
+                        {executors.map((executor) => (
+                          <option key={executor} value={executor}>
+                            {executor}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Explorer executor
+                      <select
+                        name="explorerExecutor"
+                        defaultValue={
+                          executorConfig?.explorer_executor ?? "stagehand"
+                        }
+                      >
+                        {executors.map((executor) => (
+                          <option key={executor} value={executor}>
+                            {executor}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Harness CLI
+                      <select
+                        name="harnessCli"
+                        defaultValue={executorConfig?.harness_cli ?? ""}
+                      >
+                        <option value="">None</option>
+                        <option value="claude-code">claude-code</option>
+                        <option value="codex">codex</option>
+                      </select>
+                    </label>
+                    <label>
+                      Proxy policy
+                      <select
+                        name="proxyPolicy"
+                        defaultValue={
+                          executorConfig?.default_proxy_policy ??
+                          "if_challenged"
+                        }
+                      >
+                        <option value="none">none</option>
+                        <option value="if_challenged">if_challenged</option>
+                      </select>
+                    </label>
+                    <label>
+                      VPS region
+                      <input
+                        name="vpsRegion"
+                        defaultValue={
+                          executorConfig?.vps_region ?? "ar-buenos-aires"
+                        }
+                      />
+                    </label>
+                    <label>
+                      Confirm timeout
+                      <input
+                        name="confirmTimeout"
+                        type="number"
+                        min="1"
+                        defaultValue={
+                          executorConfig?.confirm_timeout_minutes ?? 30
+                        }
+                      />
+                    </label>
+                    <label className="wide-field">
+                      Stagehand model
+                      <input
+                        name="stagehandModel"
+                        defaultValue={executorConfig?.stagehand_model ?? ""}
+                      />
+                    </label>
+                    <button
+                      className="text-btn primary wide-field"
+                      type="submit"
+                      disabled={pending !== null}
+                    >
+                      Save executor config
+                    </button>
+                  </form>
+                )}
               </div>
-              <div className="timeline-item">
-                <div className="row-title">
-                  Unknown final-click outcomes stop here
+
+              <div>
+                <div className="section-head">
+                  <ListChecks size={17} />
+                  AI tiers
                 </div>
-                <div className="row-note">
-                  Jobs in confirming timeout move to needs_reconciliation and
-                  never auto-click again.
-                </div>
-              </div>
-              <div className="timeline-item">
-                <div className="row-title">Screenshots are short-lived</div>
-                <div className="row-note">
-                  Worker uploads redacted checkout summaries and schedules
-                  cleanup through Convex.
+                <div className="ai-config-list">
+                  {aiTiers.map((tier) => {
+                    const config = aiConfigByTier.get(tier);
+                    return (
+                      <form
+                        className="ai-config-row"
+                        key={tier}
+                        onSubmit={handleAiConfig}
+                      >
+                        <input type="hidden" name="tier" value={tier} />
+                        <div className="row-title">{tier}</div>
+                        <input
+                          name="provider"
+                          aria-label={`${tier} provider`}
+                          defaultValue={config?.provider ?? "anthropic"}
+                        />
+                        <input
+                          name="model"
+                          aria-label={`${tier} model`}
+                          defaultValue={config?.model ?? ""}
+                        />
+                        <button
+                          className="text-btn"
+                          type="submit"
+                          disabled={pending !== null}
+                        >
+                          Save
+                        </button>
+                      </form>
+                    );
+                  })}
                 </div>
               </div>
             </div>

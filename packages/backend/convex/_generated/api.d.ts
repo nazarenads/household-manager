@@ -8,12 +8,14 @@
  * @module
  */
 
+import type * as audit from "../audit.js";
 import type * as bot from "../bot.js";
 import type * as carts from "../carts.js";
 import type * as config from "../config.js";
 import type * as crons from "../crons.js";
 import type * as items from "../items.js";
 import type * as jobs from "../jobs.js";
+import type * as ledger from "../ledger.js";
 import type * as lib_auth from "../lib/auth.js";
 import type * as lib_state from "../lib/state.js";
 import type * as parser from "../parser.js";
@@ -30,12 +32,14 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  audit: typeof audit;
   bot: typeof bot;
   carts: typeof carts;
   config: typeof config;
   crons: typeof crons;
   items: typeof items;
   jobs: typeof jobs;
+  ledger: typeof ledger;
   "lib/auth": typeof lib_auth;
   "lib/state": typeof lib_state;
   parser: typeof parser;

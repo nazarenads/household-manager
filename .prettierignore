@@ -1,0 +1,13 @@
+node_modules/
+.turbo/
+.next/
+**/.next/
+dist/
+coverage/
+.env
+.env.*
+**/.convex/
+*.log
+*.tsbuildinfo
+apps/worker/profiles/
+apps/worker/secrets.local.json

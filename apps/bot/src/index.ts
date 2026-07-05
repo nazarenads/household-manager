@@ -371,7 +371,9 @@ bot.callbackQuery(/^job:confirm:(.+)$/, async (ctx) => {
       sourceUser: actorFor(ctx),
     });
     await ctx.answerCallbackQuery("Order confirmed");
-    await ctx.reply("Order confirmation approved. The worker can place it now.");
+    await ctx.reply(
+      "Order confirmation approved. The worker can place it now.",
+    );
   } catch (error) {
     await ctx.answerCallbackQuery("Confirmation failed");
     await replyError(ctx, error);

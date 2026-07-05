@@ -80,10 +80,7 @@ async function findActiveItem(ctx: Ctx, search: string) {
   return match;
 }
 
-function serializeStockRow(row: {
-  item: Doc<"items">;
-  currentStock: number;
-}) {
+function serializeStockRow(row: { item: Doc<"items">; currentStock: number }) {
   return {
     item_id: row.item._id,
     name: row.item.name,
