@@ -1,0 +1,21 @@
+{
+  "name": "household-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "prettier": "^3.6.2",
+    "turbo": "^2.6.1",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@household/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "convex dev",
+    "deploy": "convex deploy",
+    "codegen": "convex codegen",
+    "build": "node scripts/codegen-if-configured.mjs",
+    "lint": "node scripts/codegen-if-configured.mjs --dry-run",
+    "typecheck": "node scripts/codegen-if-configured.mjs --dry-run"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.8",
+    "ai": "^7.0.15",
+    "convex": "^1.42.1",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
