@@ -41,14 +41,23 @@ NEXT_PUBLIC_CONVEX_URL=http://127.0.0.1:3210
 Local development runs anonymously until Clerk is configured. For deployed
 Phase 1 auth:
 
-1. Create a Clerk app and enable a Convex JWT template named `convex`.
-2. Copy `packages/backend/auth.config.example.ts` to
-   `packages/backend/convex/auth.config.ts`.
-3. Set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in the
-   dashboard environment.
-4. Set `CLERK_JWT_ISSUER_DOMAIN` and `CLERK_ALLOWED_SUBJECTS` in Convex env
-   vars. `CLERK_ALLOWED_SUBJECTS` is a comma-separated list of the two allowed
-   Clerk user subjects.
+1. Create a Clerk app and add a JWT template named `convex` (use Clerk's
+   Convex preset). Note its issuer domain.
+2. Set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in
+   `apps/dashboard/.env.local`. `ClerkProvider`, `ConvexProviderWithClerk`,
+   sign-in UI, and `apps/dashboard/proxy.ts` activate automatically once the
+   key is present — do not run `clerk init`; the wiring already exists.
+3. Copy `packages/backend/auth.config.example.ts` to
+   `packages/backend/convex/auth.config.ts` (gitignored) and set
+   `CLERK_JWT_ISSUER_DOMAIN` in Convex env vars
+   (`pnpm --filter @household/backend exec convex env set ...`) **in the same
+   sitting**: Convex refuses to push an auth config whose env var is unset,
+   and once pushed, that deployment rejects anonymous access. Keep the file
+   absent for anonymous local dev.
+4. Sign in once, then set `CLERK_ALLOWED_SUBJECTS` to the comma-separated
+   `user_...` ids of the two household members (Clerk dashboard → Users).
+   Until it is set, any user who can sign up on your Clerk instance gets in —
+   set it promptly or disable public sign-ups in Clerk.
 5. Set `WORKER_TOKEN` in Convex env vars before deploying: `seed:defaults` and
    all worker/bot mutations refuse to run on a Clerk-configured deployment
    without it.

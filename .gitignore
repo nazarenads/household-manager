@@ -12,3 +12,4 @@ coverage/
 .DS_Store
 apps/worker/profiles/
 apps/worker/secrets.local.json
+packages/backend/convex/auth.config.ts
