@@ -1,8 +1,10 @@
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+
+type T = TestConvex<typeof schema>;
 
 const modules = import.meta.glob([
   "./**/*.{js,ts}",
@@ -26,7 +28,7 @@ type Seeded = {
   cartId: Id<"carts">;
 };
 
-async function seed(t: ReturnType<typeof convexTest>): Promise<Seeded> {
+async function seed(t: T): Promise<Seeded> {
   return await t.run(async (ctx) => {
     const now = Date.now();
     await ctx.db.insert("executor_config", {
@@ -94,7 +96,7 @@ function summaryLines(seeded: Seeded, overrides: { qtyA?: number } = {}) {
   ];
 }
 
-async function queueAndClaim(t: ReturnType<typeof convexTest>, seeded: Seeded) {
+async function queueAndClaim(t: T, seeded: Seeded) {
   const jobId = await t.mutation(api.carts.queueApproved, {
     cart_id: seeded.cartId,
   });

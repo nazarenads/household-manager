@@ -1,8 +1,10 @@
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, test } from "vitest";
 import schema from "./schema";
 import { resolveExecutor } from "./lib/executors";
 import type { Id } from "./_generated/dataModel";
+
+type T = TestConvex<typeof schema>;
 
 const modules = import.meta.glob([
   "./**/*.{js,ts}",
@@ -11,7 +13,7 @@ const modules = import.meta.glob([
 ]);
 
 async function seed(
-  t: ReturnType<typeof convexTest>,
+  t: T,
   options: {
     executorOverride?: "stagehand" | "harness";
     explorerExecutor?: "stagehand" | "harness";
@@ -60,7 +62,7 @@ async function seed(
 }
 
 async function resolve(
-  t: ReturnType<typeof convexTest>,
+  t: T,
   storeId: Id<"stores">,
   explicit?: "stagehand" | "harness",
 ) {

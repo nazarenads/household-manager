@@ -1,8 +1,10 @@
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+
+type T = TestConvex<typeof schema>;
 
 const modules = import.meta.glob([
   "./**/*.{js,ts}",
@@ -19,7 +21,7 @@ type SeedItem = {
   mapped?: boolean;
 };
 
-async function seedStore(t: ReturnType<typeof convexTest>) {
+async function seedStore(t: T) {
   return await t.run(async (ctx) => {
     const now = Date.now();
     return await ctx.db.insert("stores", {
@@ -36,11 +38,7 @@ async function seedStore(t: ReturnType<typeof convexTest>) {
   });
 }
 
-async function seedItem(
-  t: ReturnType<typeof convexTest>,
-  storeId: Id<"stores">,
-  spec: SeedItem,
-) {
+async function seedItem(t: T, storeId: Id<"stores">, spec: SeedItem) {
   return await t.run(async (ctx) => {
     const now = Date.now();
     const itemId = await ctx.db.insert("items", {
@@ -79,7 +77,7 @@ async function seedItem(
   });
 }
 
-async function proposedCarts(t: ReturnType<typeof convexTest>) {
+async function proposedCarts(t: T) {
   return await t.run((ctx) =>
     ctx.db
       .query("carts")

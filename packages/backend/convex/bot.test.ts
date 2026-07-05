@@ -1,7 +1,9 @@
-import { convexTest } from "convex-test";
+import { convexTest, type TestConvex } from "convex-test";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+
+type T = TestConvex<typeof schema>;
 
 const modules = import.meta.glob([
   "./**/*.{js,ts}",
@@ -16,7 +18,7 @@ beforeEach(() => {
 });
 
 async function seedItems(
-  t: ReturnType<typeof convexTest>,
+  t: T,
   names: Array<{ name: string; aliases?: string[]; stock?: number }>,
 ) {
   return await t.run(async (ctx) => {
