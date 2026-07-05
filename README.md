@@ -41,8 +41,11 @@ NEXT_PUBLIC_CONVEX_URL=http://127.0.0.1:3210
 Local development runs anonymously until Clerk is configured. For deployed
 Phase 1 auth:
 
-1. Create a Clerk app and add a JWT template named `convex` (use Clerk's
-   Convex preset). Note its issuer domain.
+1. Create a Clerk app and activate its Convex integration
+   (https://dashboard.clerk.com/apps/setup/convex) — this replaces the old
+   manual "JWT template named convex" step. Copy the app's Frontend API URL
+   (e.g. `https://verb-noun-00.clerk.accounts.dev`); that is the issuer
+   domain.
 2. Set `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` in
    `apps/dashboard/.env.local`. `ClerkProvider`, `ConvexProviderWithClerk`,
    sign-in UI, and `apps/dashboard/proxy.ts` activate automatically once the
