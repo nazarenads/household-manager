@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
+import { SignInButton, UserButton } from "@clerk/nextjs";
 import {
   AlertTriangle,
   CalendarClock,
@@ -18,7 +18,13 @@ import {
   ShieldCheck,
   ShoppingCart,
 } from "lucide-react";
-import { useMutation, useQuery } from "convex/react";
+import {
+  Authenticated,
+  AuthLoading,
+  Unauthenticated,
+  useMutation,
+  useQuery,
+} from "convex/react";
 import { api } from "@household/backend/convex/_generated/api";
 import type { Id } from "@household/backend/convex/_generated/dataModel";
 
@@ -164,7 +170,9 @@ function formatDate(value?: number) {
   }).format(value);
 }
 
-export function DashboardClient() {
+// All Convex hooks live here; this component must only mount once Convex
+// auth is established (the queries call requireUser server-side).
+function DashboardApp() {
   const clerkEnabled = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
   const stock = asList(
     useQuery(api.stock.current, {}) as StockRow[] | undefined,
@@ -1306,11 +1314,28 @@ export function DashboardClient() {
     </div>
   );
 
-  if (!clerkEnabled) return app;
+  return app;
+}
 
+export function DashboardClient() {
+  const clerkEnabled = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+  if (!clerkEnabled) return <DashboardApp />;
+
+  // Gate on Convex's auth state, not Clerk's: Clerk reports signed-in
+  // before the Convex token handshake completes, and queries fired in that
+  // window (or while signed out) hit requireUser and throw.
   return (
     <>
-      <SignedOut>
+      <AuthLoading>
+        <div className="auth-shell">
+          <div className="auth-panel">
+            <ShieldCheck size={28} />
+            <h1>Household Manager</h1>
+            <p>Checking your session…</p>
+          </div>
+        </div>
+      </AuthLoading>
+      <Unauthenticated>
         <div className="auth-shell">
           <div className="auth-panel">
             <ShieldCheck size={28} />
@@ -1323,8 +1348,10 @@ export function DashboardClient() {
             </SignInButton>
           </div>
         </div>
-      </SignedOut>
-      <SignedIn>{app}</SignedIn>
+      </Unauthenticated>
+      <Authenticated>
+        <DashboardApp />
+      </Authenticated>
     </>
   );
 }
