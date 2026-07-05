@@ -69,6 +69,33 @@ export class WorkerConvex {
     };
   }
 
+  /**
+   * Resolve a CLI store argument (Convex _id, login_ref, or name) to the
+   * store _id — the key persistent browser profiles live under. Logging in
+   * under any other key would authenticate a profile real jobs never open.
+   */
+  async resolveStore(
+    ref: string,
+  ): Promise<{ _id: Id<"stores">; name: string; domain: string }> {
+    const stores = await this.client.query(api.stores.listForWorker, {
+      workerToken: this.workerToken,
+    });
+    const needle = ref.trim().toLowerCase();
+    const match = stores.find(
+      (store) =>
+        store._id === ref ||
+        store.login_ref.toLowerCase() === needle ||
+        store.name.toLowerCase() === needle,
+    );
+    if (match) return match;
+    const listing = stores
+      .map((store) => `  ${store._id}  ${store.login_ref}  (${store.name})`)
+      .join("\n");
+    throw new Error(
+      `No active store matches "${ref}". Use the store id or login_ref:\n${listing}`,
+    );
+  }
+
   onQueuedJobs(callback: (jobs: JobDoc[]) => void): () => void {
     return this.client.onUpdate(
       api.jobs.getQueued,

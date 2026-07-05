@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { loadEnv } from "./config/env";
 import { BrowserManager } from "./browser";
+import { WorkerConvex } from "./convexClient";
 import type { Action } from "@browserbasehq/stagehand";
 
 /**
@@ -24,16 +25,32 @@ import type { Action } from "@browserbasehq/stagehand";
  *     replay fails and a fresh observe(instruction) heals it.
  */
 
-const [command, storeId, url, ...rest] = process.argv.slice(2);
+const [command, storeRef, url, ...rest] = process.argv.slice(2);
 
-if (!command || !storeId || !url) {
+if (!command || !storeRef || !url) {
   console.error(
-    "Usage: spike <launch|observe|replay|heal> <storeId> <url> [args...]",
+    "Usage: spike <launch|observe|replay|heal> <store> <url> [args...]",
   );
   process.exit(1);
 }
 
 const env = loadEnv();
+// Resolve login_ref/name to the store _id so the spike exercises (and
+// warms up) the same persistent profile that real purchase jobs will open.
+const convex = new WorkerConvex({
+  convexUrl: env.CONVEX_URL,
+  workerToken: env.WORKER_TOKEN,
+  workerId: env.WORKER_ID,
+});
+const store = await convex.resolveStore(storeRef);
+convex.close();
+console.log(`Store:        ${store.name} (${store._id})`);
+
+if ((command === "observe" || command === "heal") && !env.ANTHROPIC_API_KEY) {
+  console.error(`${command} needs LLM calls; set ANTHROPIC_API_KEY`);
+  process.exit(1);
+}
+
 const browser = new BrowserManager({
   profileRoot: env.WORKER_PROFILE_ROOT,
   model: env.STAGEHAND_MODEL,
@@ -42,7 +59,7 @@ const browser = new BrowserManager({
   headless: env.WORKER_HEADLESS,
 });
 
-const session = await browser.ensureSession(storeId);
+const session = await browser.ensureSession(store._id);
 const { stagehand, page } = session;
 
 async function tokens() {

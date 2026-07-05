@@ -49,6 +49,12 @@ async function main() {
   const screenshotDir = expandHome(env.WORKER_SCREENSHOT_DIR);
   await fs.mkdir(screenshotDir, { recursive: true });
 
+  if (!env.ANTHROPIC_API_KEY) {
+    console.warn(
+      "[worker] ANTHROPIC_API_KEY is not set: stagehand jobs can only replay fully cached trajectories — first-contact runs and selector healing WILL fail (D11 opt-in)",
+    );
+  }
+
   const stagehandExecutor = new StagehandExecutor({
     browser,
     convex,

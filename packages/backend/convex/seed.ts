@@ -17,7 +17,9 @@ export const defaults = mutation({
     if (!executorConfig) {
       await ctx.db.insert("executor_config", {
         default_executor: "stagehand",
-        explorer_executor: "stagehand",
+        // First contact with a store that has no recorded trajectories goes
+        // to the harness explorer; known stores pin stagehand via override.
+        explorer_executor: "harness",
         harness_cli: "claude-code",
         stagehand_model: "anthropic/claude-haiku-4-5",
         vps_region: "ar-buenos-aires",
@@ -65,6 +67,9 @@ export const defaults = mutation({
       login_ref: "tienda-kay",
       proxy_policy: "none",
       shipping_preference: "default",
+      // Phase 2 gate: Tienda Kay runs on stagehand + trajectory cache even
+      // before any trajectory exists (otherwise the explorer tier grabs it).
+      executor_override: "stagehand",
       active: true,
       created_at: now,
       updated_at: now,

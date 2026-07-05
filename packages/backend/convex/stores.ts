@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { requireUser } from "./lib/auth";
+import { requireUser, requireWorkerToken } from "./lib/auth";
 
 export const list = query({
   args: { includeInactive: v.optional(v.boolean()) },
@@ -13,6 +13,26 @@ export const list = query({
       .query("stores")
       .withIndex("by_active", (q) => q.eq("active", true))
       .collect();
+  },
+});
+
+// Lets the worker CLIs (login drill, spike) resolve a human-friendly
+// login_ref/name to the store _id — the key that persistent browser
+// profiles are stored under.
+export const listForWorker = query({
+  args: { workerToken: v.string() },
+  handler: async (ctx, args) => {
+    requireWorkerToken(args);
+    const stores = await ctx.db
+      .query("stores")
+      .withIndex("by_active", (q) => q.eq("active", true))
+      .collect();
+    return stores.map((store) => ({
+      _id: store._id,
+      name: store.name,
+      domain: store.domain,
+      login_ref: store.login_ref,
+    }));
   },
 });
 

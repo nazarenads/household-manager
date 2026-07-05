@@ -91,7 +91,9 @@ Chrome via Stagehand, and runs the full confirm handshake. Environment:
 CONVEX_URL=...                # Convex deployment URL
 WORKER_TOKEN=...              # must match the Convex env var
 WORKER_ID=vps-1
-ANTHROPIC_API_KEY=...         # deliberate opt-in; Stagehand LLM calls bill here
+ANTHROPIC_API_KEY=...         # deliberate opt-in (D11), but required for any
+                              # stagehand run that isn't a fully cached replay
+                              # (first contact, healing, spike observe/heal)
 STAGEHAND_MODEL=anthropic/claude-haiku-4-5   # optional override
 WORKER_PROFILE_ROOT=~/.household-manager/profiles
 WORKER_SECRETS_FILE=/path/to/secrets.json    # chmod 600; see src/secrets.ts schema
@@ -104,15 +106,20 @@ pnpm --filter @household/worker dev
 
 Executor routing is resolved when a cart is queued: explicit choice >
 per-store override > explorer executor for a store with no recorded
-trajectories (first contact) > configured default. The harness executor runs
-`claude -p` with only the Playwright MCP attached to the worker's Chrome over
-CDP — no shell or filesystem tools, and card entry never goes through it.
+trajectories (first contact) > configured default. The seed pins Tienda Kay
+to stagehand via `executor_override` and sets the explorer executor to
+harness, so a brand-new store (Mercado Libre) routes to the harness on first
+contact. The harness executor runs `claude -p` with only the Playwright MCP
+attached to the worker's Chrome over CDP — no shell or filesystem tools, and
+card entry never goes through it.
 
 One-time per store, log in manually so the persistent profile holds the
-session:
+session. The `<store>` argument accepts the store's `login_ref`, name, or
+Convex id — it is resolved to the store `_id`, the key the persistent
+profile lives under (the same one real purchase jobs open):
 
 ```bash
-pnpm --filter @household/worker login <storeId> https://store-domain/account
+pnpm --filter @household/worker login <store> https://store-domain/account
 ```
 
 ### S2.0 spike
@@ -120,15 +127,24 @@ pnpm --filter @household/worker login <storeId> https://store-domain/account
 Run the plan's S2.0 checklist before trusting the trajectory cache
 (`pnpm --filter @household/worker spike -- <cmd> ...`):
 
-1. `spike launch <storeId> <url>` — verify profile + CDP persistence across
+1. `spike launch <store> <url>` — verify profile + CDP persistence across
    restart/reboot, and that Playwright MCP can attach to the printed endpoint.
-2. `spike observe <storeId> <url> "<instruction>" action.json` — resolve and
-   persist an action object.
-3. `spike replay <storeId> <url> action.json` — must report zero LLM tokens.
+   Chrome binds CDP to `127.0.0.1`, so verify with
+   `curl http://127.0.0.1:9222/json/version` on the machine itself (or over
+   an SSH tunnel), not against a remote IP.
+2. `spike observe <store> <url> "<instruction>" action.json` — resolve and
+   persist an action object (needs `ANTHROPIC_API_KEY`).
+3. `spike replay <store> <url> action.json` — must report zero LLM tokens.
 4. Sabotage the selector in `action.json`, then
-   `spike heal <storeId> <url> action.json "<instruction>"` — verifies the
-   heal path.
+   `spike heal <store> <url> action.json "<instruction>"` — verifies the
+   heal path (needs `ANTHROPIC_API_KEY`).
+
+`<store>` accepts the store's `login_ref`, name, or Convex id.
 
 ## First VPS Gate
 
-Before real purchases, complete Phase 1.5 from `IMPLEMENTATION_PLAN.md`: provision the VPS, set up noVNC over Tailscale/SSH, verify persistent browser profiles, and record store/IP behavior.
+Before real purchases, complete Phase 1.5 from `IMPLEMENTATION_PLAN.md`:
+provision the VPS, set up noVNC over Tailscale/SSH, verify persistent
+browser profiles, and record store/IP behavior. The step-by-step commands —
+display stack, systemd units, secrets file, spike checklist, and the first
+watched purchase — live in [docs/vps-runbook.md](docs/vps-runbook.md).
