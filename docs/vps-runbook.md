@@ -241,7 +241,7 @@ With noVNC open in a browser tab (§7), authenticate the persistent profile:
 
 ```bash
 set -a; source ~/.household-manager/worker.env; set +a
-pnpm --filter @household/worker login tienda-kay https://<store-domain>/account
+pnpm --filter @household/worker run login tienda-kay https://<store-domain>/account
 ```
 
 Log in over noVNC, then Ctrl+C. The session persists in the profile.
