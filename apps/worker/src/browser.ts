@@ -66,6 +66,15 @@ export class BrowserManager {
     const profileDir = this.profileDir(storeId);
     await fs.mkdir(profileDir, { recursive: true });
 
+    // Chrome refuses to start as root (e.g. on a VPS) without --no-sandbox.
+    // Only disable the sandbox where Chrome would otherwise not launch at all,
+    // so non-root dev machines keep the sandbox enabled.
+    const runningAsRoot =
+      typeof process.getuid === "function" && process.getuid() === 0;
+    const chromeArgs = runningAsRoot
+      ? ["--no-sandbox", "--disable-gpu"]
+      : [];
+
     const stagehand = new Stagehand({
       env: "LOCAL",
       localBrowserLaunchOptions: {
@@ -73,6 +82,7 @@ export class BrowserManager {
         preserveUserDataDir: true,
         headless: this.options.headless ?? false,
         port: this.options.cdpPort ?? 9222,
+        args: chromeArgs,
       },
       model: this.options.anthropicApiKey
         ? {
