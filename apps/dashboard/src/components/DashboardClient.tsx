@@ -197,6 +197,7 @@ export function DashboardClient() {
   const cancelCart = useMutation(api.carts.cancel);
   const queueCart = useMutation(api.carts.queueApproved);
   const confirmJob = useMutation(api.jobs.confirm);
+  const resumeJob = useMutation(api.jobs.resume);
   const markLedgerReceived = useMutation(api.ledger.markReceived);
   const setExecutorConfig = useMutation(api.config.setExecutorConfig);
   const setAiConfig = useMutation(api.config.setAiConfig);
@@ -941,6 +942,21 @@ export function DashboardClient() {
                   </div>
                   <div className="actions">
                     <span className="badge">{job.status}</span>
+                    {["paused_captcha", "paused_limit"].includes(job.status) ? (
+                      <button
+                        className="text-btn"
+                        type="button"
+                        aria-label="Resume paused job"
+                        disabled={pending !== null}
+                        onClick={() =>
+                          run("Job resumed", () =>
+                            resumeJob({ job_id: job._id }),
+                          )
+                        }
+                      >
+                        Resume
+                      </button>
+                    ) : null}
                     {job.status === "awaiting_confirm" ? (
                       <>
                         {job.summary_diff && !job.summary_diff.withinPolicy ? (

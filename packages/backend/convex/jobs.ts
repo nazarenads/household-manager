@@ -203,6 +203,113 @@ export const get = query({
   },
 });
 
+export const generateUploadUrl = mutation({
+  args: { workerToken: v.string() },
+  handler: async (ctx, args) => {
+    requireWorkerToken(args);
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+export const getForWorker = query({
+  args: { workerToken: v.string(), job_id: v.id("purchase_jobs") },
+  handler: async (ctx, args) => {
+    requireWorkerToken(args);
+    return await ctx.db.get(args.job_id);
+  },
+});
+
+export const getWorkContext = query({
+  args: { workerToken: v.string(), job_id: v.id("purchase_jobs") },
+  handler: async (ctx, args) => {
+    requireWorkerToken(args);
+    const job = await ctx.db.get(args.job_id);
+    if (!job) return null;
+    const cart = await ctx.db.get(job.cart_id);
+    const store = await ctx.db.get(job.store_id);
+    if (!cart || !store) return null;
+    const lines = await Promise.all(
+      cart.lines.map(async (line) => {
+        const item = await ctx.db.get(line.item_id);
+        const storeItem = line.store_item_id
+          ? await ctx.db.get(line.store_item_id)
+          : null;
+        return {
+          ...line,
+          item_name: item?.name ?? "Unknown item",
+          unit: item?.unit ?? "unit",
+          store_item: storeItem
+            ? {
+                name: storeItem.name,
+                product_url: storeItem.product_url,
+                sku: storeItem.sku,
+                variant: storeItem.variant,
+                pack_size: storeItem.pack_size,
+                search_terms: storeItem.search_terms,
+              }
+            : null,
+        };
+      }),
+    );
+    return {
+      job,
+      cart: { _id: cart._id, status: cart.status, lines },
+      store: {
+        _id: store._id,
+        name: store.name,
+        platform: store.platform,
+        domain: store.domain,
+        login_ref: store.login_ref,
+        proxy_ref: store.proxy_ref,
+        proxy_policy: store.proxy_policy,
+        shipping_preference: store.shipping_preference,
+      },
+    };
+  },
+});
+
+export const resume = mutation({
+  args: { job_id: v.id("purchase_jobs") },
+  handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+    const job = await ctx.db.get(args.job_id);
+    if (!job) throw new ConvexError("Job not found");
+    if (job.status === "paused_captcha") {
+      // The worker stays alive holding the browser; hand the job back to it.
+      await patchJobStatus(
+        ctx,
+        job,
+        "running",
+        actor,
+        {
+          error: undefined,
+          last_error_code: undefined,
+          lease_expires_at: Date.now() + DEFAULT_LEASE_MS,
+        },
+        "Human resumed after captcha",
+      );
+      return;
+    }
+    if (job.status === "paused_limit") {
+      await patchJobStatus(
+        ctx,
+        job,
+        "queued",
+        actor,
+        {
+          error: undefined,
+          last_error_code: undefined,
+          claimed_by: undefined,
+          lease_expires_at: undefined,
+        },
+        "Human requeued after usage limit",
+      );
+      return;
+    }
+    throw new ConvexError("Only paused jobs can be resumed");
+  },
+});
+
 export const claim = mutation({
   args: {
     workerToken: v.string(),

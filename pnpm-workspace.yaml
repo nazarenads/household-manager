@@ -3,7 +3,10 @@ packages:
   - "packages/*"
 allowBuilds:
   "@clerk/shared": true
+  "@google/genai": false
+  bufferutil: false
   esbuild: true
+  protobufjs: false
   sharp: true
 minimumReleaseAgeExclude:
   - "@ai-sdk/anthropic@4.0.8"

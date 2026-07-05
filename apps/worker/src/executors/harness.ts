@@ -62,7 +62,7 @@ export class HarnessExecutor implements Executor {
       "Stop at the order summary. Do not click the final purchase/confirm button.",
       "Return only JSON matching the provided schema.",
       `Job: ${job.jobId}`,
-      `Store: ${job.storeId}`,
+      `Store: ${job.work.store.name} (${job.work.store.domain})`,
     ].join("\n");
     const parsed = await this.runClaude(prompt, "SummaryResultSchema");
     return summaryResultSchema.parse(parsed);

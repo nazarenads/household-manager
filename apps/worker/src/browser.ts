@@ -1,45 +1,120 @@
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs/promises";
+import { Stagehand } from "@browserbasehq/stagehand";
+
+export type StagehandPage = Awaited<
+  ReturnType<Stagehand["context"]["awaitActivePage"]>
+>;
 
 export type BrowserSession = {
   storeId: string;
   profileDir: string;
   cdpEndpoint: string;
+  stagehand: Stagehand;
+  page: StagehandPage;
 };
 
 export type BrowserManagerOptions = {
   profileRoot: string;
-  cdpHost?: string;
-  cdpPort?: number;
+  model: string;
+  anthropicApiKey?: string | undefined;
+  cdpHost?: string | undefined;
+  cdpPort?: number | undefined;
+  headless?: boolean | undefined;
 };
 
-function expandHome(value: string) {
+export function expandHome(value: string) {
   if (value === "~") return os.homedir();
   if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
   return value;
 }
 
+/**
+ * Owns the worker's Chrome lifecycle (D2): Stagehand LOCAL launch with a
+ * persistent per-store profile and a fixed CDP port. One live session at a
+ * time — jobs are serialized, and a single CDP port keeps the endpoint
+ * predictable for the harness executor and noVNC recovery.
+ *
+ * Stagehand's own caches are disabled (D1): selfHeal off, serverCache off,
+ * no cacheDir. Healing is owned by the trajectory runner.
+ */
 export class BrowserManager {
+  private readonly options: BrowserManagerOptions;
   private readonly profileRoot: string;
-  private readonly cdpHost: string;
-  private readonly cdpPort: number;
+  private current: BrowserSession | null = null;
 
   constructor(options: BrowserManagerOptions) {
+    this.options = options;
     this.profileRoot = expandHome(options.profileRoot);
-    this.cdpHost = options.cdpHost ?? "127.0.0.1";
-    this.cdpPort = options.cdpPort ?? 9222;
+  }
+
+  cdpEndpoint() {
+    const host = this.options.cdpHost ?? "127.0.0.1";
+    const port = this.options.cdpPort ?? 9222;
+    return `http://${host}:${port}`;
+  }
+
+  profileDir(storeId: string) {
+    return path.join(this.profileRoot, storeId);
   }
 
   async ensureSession(storeId: string): Promise<BrowserSession> {
-    const profileDir = path.join(this.profileRoot, storeId);
-    return {
+    if (this.current?.storeId === storeId) return this.current;
+    if (this.current) await this.closeSession();
+
+    const profileDir = this.profileDir(storeId);
+    await fs.mkdir(profileDir, { recursive: true });
+
+    const stagehand = new Stagehand({
+      env: "LOCAL",
+      localBrowserLaunchOptions: {
+        userDataDir: profileDir,
+        preserveUserDataDir: true,
+        headless: this.options.headless ?? false,
+        port: this.options.cdpPort ?? 9222,
+      },
+      model: this.options.anthropicApiKey
+        ? {
+            modelName: this.options.model,
+            apiKey: this.options.anthropicApiKey,
+          }
+        : this.options.model,
+      keepAlive: true,
+      disableAPI: true,
+      serverCache: false,
+      selfHeal: false,
+      disablePino: true,
+      verbose: 0,
+    });
+    await stagehand.init();
+    const page = await stagehand.context.awaitActivePage();
+
+    this.current = {
       storeId,
       profileDir,
-      cdpEndpoint: `http://${this.cdpHost}:${this.cdpPort}`,
+      cdpEndpoint: this.cdpEndpoint(),
+      stagehand,
+      page,
     };
+    return this.current;
   }
 
-  async closeStoreTab(_storeId: string): Promise<void> {
-    // The concrete Stagehand/Chrome lifecycle lands in S2.0 after VPS validation.
+  async closeSession(): Promise<void> {
+    if (!this.current) return;
+    const session = this.current;
+    this.current = null;
+    try {
+      await session.stagehand.close();
+    } catch (error) {
+      console.error(
+        `Failed to close browser session for ${session.storeId}:`,
+        error,
+      );
+    }
+  }
+
+  async closeAll(): Promise<void> {
+    await this.closeSession();
   }
 }
