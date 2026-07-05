@@ -17,33 +17,36 @@ const openCartStatuses: Doc<"carts">["status"][] = [
   "awaiting_confirm",
 ];
 
-async function currentStockForItem(ctx: MutationCtx, itemId: Id<"items">) {
+async function openCartItemIds(ctx: MutationCtx) {
+  const ids = new Set<Id<"items">>();
+  for (const status of openCartStatuses) {
+    const carts = await ctx.db
+      .query("carts")
+      .withIndex("by_status", (q) => q.eq("status", status))
+      .collect();
+    for (const cart of carts) {
+      for (const line of cart.lines) {
+        ids.add(line.item_id);
+      }
+    }
+  }
+  return ids;
+}
+
+async function stockFor(
+  ctx: MutationCtx,
+  itemId: Id<"items">,
+  cache: Map<Id<"items">, number>,
+) {
+  const cached = cache.get(itemId);
+  if (cached !== undefined) return cached;
   const events = await ctx.db
     .query("stock_events")
     .withIndex("by_item", (q) => q.eq("item_id", itemId))
     .collect();
-  return events.reduce((sum, event) => sum + event.delta, 0);
-}
-
-async function itemIsAlreadyOpen(
-  ctx: MutationCtx,
-  storeId: Id<"stores">,
-  itemId: Id<"items">,
-) {
-  for (const status of openCartStatuses) {
-    const carts = await ctx.db
-      .query("carts")
-      .withIndex("by_store_status", (q) =>
-        q.eq("store_id", storeId).eq("status", status),
-      )
-      .collect();
-    if (
-      carts.some((cart) => cart.lines.some((line) => line.item_id === itemId))
-    ) {
-      return true;
-    }
-  }
-  return false;
+  const total = events.reduce((sum, event) => sum + event.delta, 0);
+  cache.set(itemId, total);
+  return total;
 }
 
 async function storeItemForItem(
@@ -60,17 +63,6 @@ async function storeItemForItem(
     .first();
 }
 
-async function substituteNote(ctx: MutationCtx, item: Doc<"items">) {
-  if (item.substitute_item_ids.length === 0) return undefined;
-  const substitutes = await Promise.all(
-    item.substitute_item_ids.map((id) => ctx.db.get(id)),
-  );
-  const names = substitutes
-    .filter((substitute): substitute is Doc<"items"> => Boolean(substitute))
-    .map((substitute) => substitute.name);
-  return names.length > 0 ? `Substitutes: ${names.join(", ")}` : undefined;
-}
-
 export const createNightlyProposals = internalMutation({
   args: {},
   handler: async (ctx) => {
@@ -79,6 +71,8 @@ export const createNightlyProposals = internalMutation({
       .query("items")
       .withIndex("by_active", (q) => q.eq("active", true))
       .collect();
+    const openItemIds = await openCartItemIds(ctx);
+    const stockCache = new Map<Id<"items">, number>();
     const proposedByStore = new Map<
       string,
       { storeId: Id<"stores">; lines: ProposalLine[] }
@@ -86,25 +80,62 @@ export const createNightlyProposals = internalMutation({
 
     for (const item of items) {
       if (!item.preferred_store_id) continue;
-      const currentStock = await currentStockForItem(ctx, item._id);
-      if (currentStock > item.reorder_point) continue;
-      if (await itemIsAlreadyOpen(ctx, item.preferred_store_id, item._id)) {
+
+      const substitutes = (
+        await Promise.all(item.substitute_item_ids.map((id) => ctx.db.get(id)))
+      ).filter(
+        (substitute): substitute is Doc<"items"> =>
+          Boolean(substitute) && substitute!.active,
+      );
+
+      // Substitute stock covers the need; an open cart for the item or a
+      // substitute means replenishment is already on the way.
+      const ownStock = await stockFor(ctx, item._id, stockCache);
+      let effectiveStock = ownStock;
+      for (const substitute of substitutes) {
+        effectiveStock += await stockFor(ctx, substitute._id, stockCache);
+      }
+      if (effectiveStock > item.reorder_point) continue;
+      if (
+        openItemIds.has(item._id) ||
+        substitutes.some((substitute) => openItemIds.has(substitute._id))
+      ) {
         continue;
       }
 
-      const storeItem = await storeItemForItem(
+      let lineItem: Doc<"items"> = item;
+      let storeItem = await storeItemForItem(
         ctx,
         item.preferred_store_id,
         item._id,
       );
-      const note = await substituteNote(ctx, item);
-      const qty = Math.max(item.reorder_to - currentStock, 1);
+      let note =
+        substitutes.length > 0
+          ? `Substitutes: ${substitutes.map((s) => s.name).join(", ")}`
+          : undefined;
+      if (!storeItem) {
+        for (const substitute of substitutes) {
+          const substituteStoreItem = await storeItemForItem(
+            ctx,
+            item.preferred_store_id,
+            substitute._id,
+          );
+          if (substituteStoreItem) {
+            lineItem = substitute;
+            storeItem = substituteStoreItem;
+            note = `Substitute for ${item.name} (no store mapping)`;
+            break;
+          }
+        }
+      }
+
+      const qty = Math.max(item.reorder_to - ownStock, 1);
       const entry = proposedByStore.get(item.preferred_store_id) ?? {
         storeId: item.preferred_store_id,
         lines: [],
       };
       entry.lines.push({
-        item_id: item._id,
+        item_id: lineItem._id,
         ...(storeItem ? { store_item_id: storeItem._id } : {}),
         qty,
         ...(storeItem?.last_seen_price

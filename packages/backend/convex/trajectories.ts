@@ -1,11 +1,11 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { requireUser, requireWorkerToken } from "./lib/auth";
+import { requireWorkerToken } from "./lib/auth";
 
 export const getForStoreFlow = query({
-  args: { store_id: v.id("stores"), flow: v.string() },
+  args: { workerToken: v.string(), store_id: v.id("stores"), flow: v.string() },
   handler: async (ctx, args) => {
-    await requireUser(ctx);
+    requireWorkerToken(args);
     return await ctx.db
       .query("trajectories")
       .withIndex("by_store_flow", (q) =>

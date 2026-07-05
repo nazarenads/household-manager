@@ -49,6 +49,12 @@ Phase 1 auth:
 4. Set `CLERK_JWT_ISSUER_DOMAIN` and `CLERK_ALLOWED_SUBJECTS` in Convex env
    vars. `CLERK_ALLOWED_SUBJECTS` is a comma-separated list of the two allowed
    Clerk user subjects.
+5. Set `WORKER_TOKEN` in Convex env vars before deploying: `seed:defaults` and
+   all worker/bot mutations refuse to run on a Clerk-configured deployment
+   without it.
+
+The parser action reads its model from the `ai_config` table (editable in the
+dashboard Config panel); the `PARSER_MODEL` env var is only a fallback.
 
 ## Telegram Bot
 

@@ -1,6 +1,22 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalQuery, mutation, query } from "./_generated/server";
 import { requireUser } from "./lib/auth";
+
+export const getAiConfigForTier = internalQuery({
+  args: {
+    tier: v.union(
+      v.literal("parser"),
+      v.literal("executor"),
+      v.literal("explorer"),
+    ),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("ai_config")
+      .withIndex("by_tier", (q) => q.eq("tier", args.tier))
+      .unique();
+  },
+});
 
 export const getExecutorConfig = query({
   args: {},

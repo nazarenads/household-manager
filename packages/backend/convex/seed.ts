@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { mutation } from "./_generated/server";
 import { requireWorkerToken } from "./lib/auth";
 
@@ -7,6 +7,10 @@ export const defaults = mutation({
   handler: async (ctx, args) => {
     if (process.env.WORKER_TOKEN) {
       requireWorkerToken(args);
+    } else if (process.env.CLERK_JWT_ISSUER_DOMAIN) {
+      // Deployed without a worker token: refuse rather than allow anyone
+      // holding the Convex URL to seed the database.
+      throw new ConvexError("WORKER_TOKEN must be configured before seeding");
     }
 
     const executorConfig = await ctx.db.query("executor_config").first();

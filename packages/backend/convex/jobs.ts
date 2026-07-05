@@ -10,9 +10,112 @@ import {
 } from "./lib/state";
 
 const DEFAULT_LEASE_MS = 10 * 60 * 1000;
-const DEFAULT_CONFIRM_MS = 30 * 60 * 1000;
 const SCREENSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 const CONFIRMING_RECONCILIATION_MS = 15 * 60 * 1000;
+const PRICE_DRIFT_TOLERANCE = 0.15;
+
+type SummaryLineArg = {
+  item_id?: Id<"items">;
+  store_item_id?: Id<"store_items">;
+  name: string;
+  qty: number;
+  unit_price?: number;
+  line_total?: number;
+  status: "expected" | "substituted" | "unavailable" | "extra";
+};
+
+type ExpectedLine = {
+  item_id: Id<"items">;
+  store_item_id?: Id<"store_items">;
+  qty: number;
+  expected_unit_price?: number;
+  name: string;
+};
+
+export type SummaryDiffIssue = {
+  type:
+    | "missing"
+    | "substituted"
+    | "unavailable"
+    | "extra"
+    | "qty_mismatch"
+    | "price_drift";
+  name: string;
+  expected_qty?: number;
+  actual_qty?: number;
+  expected_unit_price?: number;
+  unit_price?: number;
+};
+
+export type SummaryDiff = {
+  withinPolicy: boolean;
+  issues: SummaryDiffIssue[];
+};
+
+function computeSummaryDiff(
+  expected: ExpectedLine[],
+  summaryLines: SummaryLineArg[],
+): SummaryDiff {
+  const issues: SummaryDiffIssue[] = [];
+  const matched = new Set<number>();
+
+  for (const line of expected) {
+    const index = summaryLines.findIndex(
+      (summary, i) =>
+        !matched.has(i) &&
+        ((summary.item_id && summary.item_id === line.item_id) ||
+          (summary.store_item_id &&
+            line.store_item_id &&
+            summary.store_item_id === line.store_item_id)),
+    );
+    if (index === -1) {
+      issues.push({ type: "missing", name: line.name, expected_qty: line.qty });
+      continue;
+    }
+    matched.add(index);
+    const summary = summaryLines[index]!;
+    if (summary.status === "substituted") {
+      issues.push({ type: "substituted", name: summary.name });
+    }
+    if (summary.status === "unavailable") {
+      issues.push({ type: "unavailable", name: summary.name });
+      continue;
+    }
+    if (summary.qty !== line.qty) {
+      issues.push({
+        type: "qty_mismatch",
+        name: summary.name,
+        expected_qty: line.qty,
+        actual_qty: summary.qty,
+      });
+    }
+    if (
+      line.expected_unit_price &&
+      summary.unit_price &&
+      Math.abs(summary.unit_price - line.expected_unit_price) >
+        line.expected_unit_price * PRICE_DRIFT_TOLERANCE
+    ) {
+      issues.push({
+        type: "price_drift",
+        name: summary.name,
+        expected_unit_price: line.expected_unit_price,
+        unit_price: summary.unit_price,
+      });
+    }
+  }
+
+  summaryLines.forEach((summary, index) => {
+    if (!matched.has(index)) {
+      issues.push({
+        type: "extra",
+        name: summary.name,
+        actual_qty: summary.qty,
+      });
+    }
+  });
+
+  return { withinPolicy: issues.length === 0, issues };
+}
 
 async function patchJobStatus(
   ctx: MutationCtx,
@@ -72,16 +175,23 @@ export const list = query({
   args: { status: v.optional(v.string()) },
   handler: async (ctx, args) => {
     await requireUser(ctx);
-    if (args.status) {
-      return await ctx.db
-        .query("purchase_jobs")
-        .withIndex("by_status", (q) =>
-          q.eq("status", args.status as PurchaseJobStatus),
-        )
-        .order("desc")
-        .collect();
-    }
-    return await ctx.db.query("purchase_jobs").order("desc").collect();
+    const jobs = args.status
+      ? await ctx.db
+          .query("purchase_jobs")
+          .withIndex("by_status", (q) =>
+            q.eq("status", args.status as PurchaseJobStatus),
+          )
+          .order("desc")
+          .collect()
+      : await ctx.db.query("purchase_jobs").order("desc").collect();
+    return await Promise.all(
+      jobs.map(async (job) => ({
+        ...job,
+        order_summary_screenshot_url: job.order_summary_screenshot
+          ? await ctx.storage.getUrl(job.order_summary_screenshot)
+          : null,
+      })),
+    );
   },
 });
 
@@ -166,7 +276,6 @@ export const reachedSummary = mutation({
     ),
     summary_shipping_total: v.optional(v.number()),
     summary_delivery_window: v.optional(v.string()),
-    summary_diff: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     requireWorkerToken(args);
@@ -175,6 +284,15 @@ export const reachedSummary = mutation({
     if (job.status !== "running" || job.claimed_by !== args.worker_id) {
       throw new ConvexError("Worker does not hold this running job");
     }
+    const cart = await ctx.db.get(job.cart_id);
+    if (!cart) throw new ConvexError("Cart not found");
+    const expected: ExpectedLine[] = await Promise.all(
+      cart.lines.map(async (line) => ({
+        ...line,
+        name: (await ctx.db.get(line.item_id))?.name ?? "Unknown item",
+      })),
+    );
+    const summaryDiff = computeSummaryDiff(expected, args.summary_line_items);
     const config = await ctx.db.query("executor_config").first();
     const timeoutMs = (config?.confirm_timeout_minutes ?? 30) * 60 * 1000;
     const now = Date.now();
@@ -193,7 +311,7 @@ export const reachedSummary = mutation({
         summary_line_items: args.summary_line_items,
         summary_shipping_total: args.summary_shipping_total,
         summary_delivery_window: args.summary_delivery_window,
-        summary_diff: args.summary_diff,
+        summary_diff: summaryDiff,
         confirm_deadline: now + timeoutMs,
         lease_expires_at: undefined,
       },
@@ -251,6 +369,9 @@ export const startConfirming = mutation({
     requireWorkerToken(args);
     const job = await ctx.db.get(args.job_id);
     if (!job) throw new ConvexError("Job not found");
+    if (job.claimed_by && job.claimed_by !== args.worker_id) {
+      throw new ConvexError("Another worker holds this job");
+    }
     await patchJobStatus(
       ctx,
       job,

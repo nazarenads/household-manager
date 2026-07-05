@@ -3,6 +3,8 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { v } from "convex/values";
 import { action } from "./_generated/server";
+import { internal } from "./_generated/api";
+import type { Doc } from "./_generated/dataModel";
 import { requireUser } from "./lib/auth";
 
 const parserResultSchema = z.object({
@@ -13,10 +15,16 @@ const parserResultSchema = z.object({
 
 export const parseStockMessage = action({
   args: { text: v.string() },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<z.infer<typeof parserResultSchema>> => {
     await requireUser(ctx);
+    const config: Doc<"ai_config"> | null = await ctx.runQuery(
+      internal.config.getAiConfigForTier,
+      { tier: "parser" },
+    );
     const result = await generateObject({
-      model: anthropic(process.env.PARSER_MODEL ?? "claude-haiku-4-5"),
+      model: anthropic(
+        config?.model ?? process.env.PARSER_MODEL ?? "claude-haiku-4-5",
+      ),
       schema: parserResultSchema,
       prompt: [
         "Parse a household stock update into an item name and signed delta.",

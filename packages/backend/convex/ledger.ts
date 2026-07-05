@@ -67,6 +67,9 @@ export const markReceived = mutation({
     const entry = await ctx.db.get(args.id);
     if (!entry) throw new ConvexError("Ledger entry not found");
     if (entry.status === "received") return entry._id;
+    if (entry.status !== "placed") {
+      throw new ConvexError("Only placed orders can be marked received");
+    }
 
     const now = Date.now();
     await ctx.db.patch(entry._id, {

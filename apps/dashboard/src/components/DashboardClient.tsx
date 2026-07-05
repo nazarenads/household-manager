@@ -61,6 +61,34 @@ type Job = {
   executor: string;
   order_summary_total?: number;
   error?: string;
+  order_summary_screenshot_url?: string | null;
+  summary_line_items?: Array<{
+    name: string;
+    qty: number;
+    unit_price?: number;
+    line_total?: number;
+    status: "expected" | "substituted" | "unavailable" | "extra";
+  }>;
+  summary_shipping_total?: number;
+  summary_delivery_window?: string;
+  summary_diff?: {
+    withinPolicy: boolean;
+    issues: Array<{
+      type:
+        | "missing"
+        | "substituted"
+        | "unavailable"
+        | "extra"
+        | "qty_mismatch"
+        | "price_drift";
+      name: string;
+      expected_qty?: number;
+      actual_qty?: number;
+      expected_unit_price?: number;
+      unit_price?: number;
+    }>;
+  };
+  confirm_deadline?: number;
 };
 
 type LedgerEntry = {
@@ -386,6 +414,39 @@ export function DashboardClient() {
     if (!provider || !model) return;
     await run("AI config saved", async () => {
       await setAiConfig({ tier, provider, model });
+    });
+  }
+
+  async function handleReconciliationSweep(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const corrections: Array<{
+      item_id: Id<"items">;
+      actual_count: number;
+    }> = [];
+
+    stock.forEach((row) => {
+      const inputValue = String(form.get(`sweep-${row.item._id}`) ?? "").trim();
+      if (!inputValue) return;
+      const value = Number(inputValue);
+      if (!isNaN(value) && value >= 0 && value !== row.currentStock) {
+        corrections.push({ item_id: row.item._id, actual_count: value });
+      }
+    });
+
+    if (corrections.length === 0) {
+      setMessage("No corrections needed");
+      return;
+    }
+
+    await run("Sweep applied", async () => {
+      for (const correction of corrections) {
+        await reconcile({
+          item_id: correction.item_id,
+          actual_count: correction.actual_count,
+          note: "Reconciliation sweep",
+        });
+      }
     });
   }
 
@@ -785,7 +846,14 @@ export function DashboardClient() {
                 <div className="empty">No purchase jobs yet.</div>
               ) : null}
               {jobs.map((job) => (
-                <div className="job-row" key={job._id}>
+                <div
+                  className={
+                    job.status === "awaiting_confirm"
+                      ? "job-row tall-row"
+                      : "job-row"
+                  }
+                  key={job._id}
+                >
                   <div>
                     <div className="row-title">
                       {storeById.get(job.store_id)?.name ?? "Unknown store"}
@@ -797,23 +865,117 @@ export function DashboardClient() {
                         : ""}
                       {job.error ? ` · ${job.error}` : ""}
                     </div>
+                    {job.status === "awaiting_confirm" ? (
+                      <>
+                        {job.order_summary_screenshot_url ? (
+                          <img
+                            src={job.order_summary_screenshot_url}
+                            alt="Redacted checkout summary"
+                            className="summary-shot"
+                          />
+                        ) : null}
+                        {job.summary_line_items?.length ? (
+                          <div className="summary-lines">
+                            {job.summary_line_items.map((line, idx) => (
+                              <div key={idx}>
+                                {line.name} x{line.qty}
+                                {line.unit_price
+                                  ? ` · ${formatMoney(line.unit_price)}`
+                                  : ""}
+                                {line.status !== "expected" ? (
+                                  <span className="badge">{line.status}</span>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                        <div className="row-note">
+                          {job.summary_shipping_total
+                            ? `Shipping: ${formatMoney(job.summary_shipping_total)}`
+                            : ""}
+                          {job.summary_shipping_total &&
+                          job.summary_delivery_window
+                            ? " · "
+                            : ""}
+                          {job.summary_delivery_window
+                            ? `Delivery: ${job.summary_delivery_window}`
+                            : ""}
+                          {(job.summary_shipping_total ||
+                            job.summary_delivery_window) &&
+                          job.confirm_deadline
+                            ? " · "
+                            : ""}
+                          {job.confirm_deadline
+                            ? `Confirm by ${formatDate(job.confirm_deadline)}`
+                            : ""}
+                        </div>
+                        {job.summary_diff && !job.summary_diff.withinPolicy ? (
+                          <div className="diff-warning">
+                            {job.summary_diff.issues.map((issue, idx) => (
+                              <div key={idx}>
+                                {issue.type === "missing"
+                                  ? `missing: ${issue.name}${issue.expected_qty ? ` (expected ${issue.expected_qty})` : ""}`
+                                  : issue.type === "qty_mismatch"
+                                    ? `qty_mismatch: ${issue.name} (expected ${issue.expected_qty}, got ${issue.actual_qty})`
+                                    : issue.type === "price_drift"
+                                      ? `price_drift: ${issue.name} (expected ${
+                                          issue.expected_unit_price
+                                            ? formatMoney(
+                                                issue.expected_unit_price,
+                                              )
+                                            : "—"
+                                        }, got ${issue.unit_price ? formatMoney(issue.unit_price) : "—"})`
+                                      : issue.type === "extra"
+                                        ? `extra: ${issue.name}${issue.actual_qty ? ` (x${issue.actual_qty})` : ""}`
+                                        : issue.type === "substituted"
+                                          ? `substituted: ${issue.name}`
+                                          : issue.type === "unavailable"
+                                            ? `unavailable: ${issue.name}`
+                                            : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </>
+                    ) : null}
                   </div>
                   <div className="actions">
                     <span className="badge">{job.status}</span>
                     {job.status === "awaiting_confirm" ? (
-                      <button
-                        className="icon-btn primary"
-                        type="button"
-                        aria-label="Confirm order placement"
-                        disabled={pending !== null}
-                        onClick={() =>
-                          run("Job confirmed", () =>
-                            confirmJob({ job_id: job._id }),
-                          )
-                        }
-                      >
-                        <Check size={18} />
-                      </button>
+                      <>
+                        {job.summary_diff && !job.summary_diff.withinPolicy ? (
+                          <button
+                            className="text-btn danger"
+                            type="button"
+                            aria-label="Place order anyway"
+                            disabled={pending !== null}
+                            onClick={() =>
+                              run("Order override confirmed", () =>
+                                confirmJob({
+                                  job_id: job._id,
+                                  override_summary_diff: true,
+                                }),
+                              )
+                            }
+                          >
+                            Place order anyway
+                          </button>
+                        ) : (
+                          <button
+                            className="icon-btn primary"
+                            type="button"
+                            aria-label="Confirm order placement"
+                            disabled={pending !== null}
+                            onClick={() =>
+                              run("Job confirmed", () =>
+                                confirmJob({ job_id: job._id }),
+                              )
+                            }
+                          >
+                            <Check size={18} />
+                          </button>
+                        )}
+                      </>
                     ) : null}
                   </div>
                 </div>
@@ -1077,6 +1239,51 @@ export function DashboardClient() {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="panel span-12">
+            <h2>Reconciliation sweep</h2>
+            <form
+              className="sweep-form"
+              key={stock
+                .map((r) => `${r.item._id}:${r.currentStock}`)
+                .join("|")}
+              onSubmit={handleReconciliationSweep}
+            >
+              {stock.length === 0 ? (
+                <div className="empty">No items to reconcile.</div>
+              ) : (
+                <>
+                  <div className="sweep-list">
+                    {stock.map((row) => (
+                      <div className="sweep-row" key={row.item._id}>
+                        <div>
+                          <div className="row-title">{row.item.name}</div>
+                          <div className="row-note">
+                            {row.currentStock} {row.item.unit}
+                          </div>
+                        </div>
+                        <input
+                          name={`sweep-${row.item._id}`}
+                          type="number"
+                          min="0"
+                          step="1"
+                          defaultValue={row.currentStock}
+                          aria-label={`Actual count for ${row.item.name}`}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    className="text-btn primary"
+                    type="submit"
+                    disabled={pending !== null}
+                  >
+                    Apply corrections
+                  </button>
+                </>
+              )}
+            </form>
           </div>
         </section>
       </main>
