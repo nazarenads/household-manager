@@ -20,7 +20,7 @@ async function patchCartStatus(
     from_status: cart.status,
     to_status: status,
     actor,
-    note,
+    ...(note ? { note } : {}),
     created_at: now,
   });
 }
@@ -78,7 +78,7 @@ export const createProposed = mutation({
       cart_id: cartId,
       to_status: "proposed",
       actor,
-      note: args.note,
+      ...(args.note ? { note: args.note } : {}),
       created_at: now,
     });
     return cartId;

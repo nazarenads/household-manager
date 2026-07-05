@@ -19,18 +19,18 @@ async function patchJobStatus(
   job: Doc<"purchase_jobs">,
   status: PurchaseJobStatus,
   actor: string,
-  patch: Partial<Doc<"purchase_jobs">> = {},
+  patch: Record<string, unknown> = {},
   note?: string,
 ) {
   assertJobTransition(job.status, status);
   const now = Date.now();
-  await ctx.db.patch(job._id, { ...patch, status, updated_at: now });
+  await ctx.db.patch(job._id, { ...patch, status, updated_at: now } as any);
   await ctx.db.insert("job_events", {
     job_id: job._id,
     from_status: job.status,
     to_status: status,
     actor,
-    note,
+    ...(note ? { note } : {}),
     created_at: now,
   });
 }
@@ -52,7 +52,7 @@ async function patchCartStatus(
     from_status: cart.status,
     to_status: status,
     actor,
-    note,
+    ...(note ? { note } : {}),
     created_at: now,
   });
 }
@@ -294,8 +294,8 @@ export const complete = mutation({
         status: "placed",
         total: args.total,
         currency: args.currency,
-        order_ref: args.order_ref,
-        receipt_ref: args.receipt_ref,
+        ...(args.order_ref ? { order_ref: args.order_ref } : {}),
+        ...(args.receipt_ref ? { receipt_ref: args.receipt_ref } : {}),
         line_items: args.line_items,
         placed_at: now,
         created_at: now,

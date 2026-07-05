@@ -5,10 +5,17 @@ type Ctx = QueryCtx | MutationCtx | ActionCtx;
 
 export async function requireUser(ctx: Ctx) {
   const identity = await ctx.auth.getUserIdentity();
-  if (!identity) {
-    throw new ConvexError("Authentication required");
+  if (identity) {
+    return identity.subject;
   }
-  return identity.subject;
+
+  // Local anonymous Convex development has no Clerk issuer configured. Once
+  // Clerk is wired in deployment config, unauthenticated access is rejected.
+  if (!process.env.CLERK_JWT_ISSUER_DOMAIN) {
+    return "local-dev-user";
+  }
+
+  throw new ConvexError("Authentication required");
 }
 
 export function requireWorkerToken(args: { workerToken: string }) {

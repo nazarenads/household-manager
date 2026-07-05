@@ -18,16 +18,22 @@ pnpm typecheck
 pnpm build
 ```
 
-Convex codegen is skipped until a deployment is configured. To configure Convex:
+To configure anonymous local Convex development:
 
 ```bash
 pnpm --filter @household/backend dev
 ```
 
-Then seed defaults:
+Then seed defaults in another terminal:
 
 ```bash
-pnpm --filter @household/backend exec convex run seed:defaults '{"workerToken":"<WORKER_TOKEN>"}'
+pnpm --filter @household/backend exec convex run seed:defaults '{"workerToken":"local-dev"}'
+```
+
+For this local-only setup, the dashboard uses `apps/dashboard/.env.local` with:
+
+```bash
+NEXT_PUBLIC_CONVEX_URL=http://127.0.0.1:3210
 ```
 
 ## First VPS Gate

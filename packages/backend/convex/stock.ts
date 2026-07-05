@@ -73,7 +73,7 @@ export const reconcile = mutation({
       delta,
       reason: "reconciliation",
       source_user: user,
-      note: args.note,
+      ...(args.note ? { note: args.note } : {}),
       created_at: Date.now(),
     });
   },

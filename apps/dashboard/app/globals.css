@@ -37,6 +37,17 @@ textarea {
   font: inherit;
 }
 
+input,
+select {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  padding: 0 10px;
+  min-width: 0;
+}
+
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -105,6 +116,19 @@ textarea {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.notice,
+.config-missing {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.config-missing {
+  margin: 40px auto;
+  max-width: 640px;
 }
 
 .badge {
@@ -184,6 +208,12 @@ textarea {
   gap: 8px;
 }
 
+.actions button:disabled,
+.text-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .icon-btn {
   width: 36px;
   height: 36px;
@@ -201,6 +231,17 @@ textarea {
   color: #fff;
 }
 
+.text-btn {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  padding: 0 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 .danger {
   color: var(--danger);
 }
@@ -208,6 +249,45 @@ textarea {
 .timeline {
   display: grid;
   gap: 10px;
+}
+
+.stack-form {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 14px;
+}
+
+.stack-form:first-of-type {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.form-grid .text-btn {
+  grid-column: span 2;
+}
+
+.inline-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) 80px auto;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.empty {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  min-height: 46px;
+  display: grid;
+  place-items: center;
+  padding: 10px;
 }
 
 .timeline-item {
@@ -233,5 +313,14 @@ textarea {
   .span-7,
   .span-5 {
     grid-column: span 12;
+  }
+
+  .inline-form,
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-grid .text-btn {
+    grid-column: auto;
   }
 }
