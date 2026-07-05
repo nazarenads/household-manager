@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { loadEnv } from "./config/env";
+import { actOrThrow } from "./act";
 import { BrowserManager } from "./browser";
 import { WorkerConvex } from "./convexClient";
 import type { Action } from "@browserbasehq/stagehand";
@@ -101,7 +102,7 @@ switch (command) {
     }
     const action = JSON.parse(await fs.readFile(savedFile, "utf8")) as Action;
     const before = await tokens();
-    await stagehand.act(action);
+    await actOrThrow(stagehand, action);
     const used = (await tokens()) - before;
     console.log(
       `Replay succeeded with ${used} LLM tokens ${used === 0 ? "(zero-LLM confirmed)" : "(NOT zero — investigate!)"}`,
@@ -116,7 +117,7 @@ switch (command) {
     }
     const action = JSON.parse(await fs.readFile(savedFile, "utf8")) as Action;
     try {
-      await stagehand.act(action);
+      await actOrThrow(stagehand, action);
       console.log(
         "Cached action still works — sabotage the selector in the JSON to test healing.",
       );
@@ -124,7 +125,7 @@ switch (command) {
       const before = await tokens();
       const [healed] = await stagehand.observe(instruction);
       if (!healed) throw new Error("Heal observe() returned no action");
-      await stagehand.act(healed);
+      await actOrThrow(stagehand, healed);
       await fs.writeFile(savedFile, JSON.stringify(healed, null, 2));
       console.log(
         `Healed and re-saved (${(await tokens()) - before} LLM tokens):`,

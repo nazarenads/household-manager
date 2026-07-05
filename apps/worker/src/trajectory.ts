@@ -1,5 +1,6 @@
 import type { Action, Stagehand } from "@browserbasehq/stagehand";
 import type { Id } from "@household/backend/convex/_generated/dataModel";
+import { actOrThrow } from "./act";
 import type { TrajectoryStep, WorkerConvex } from "./convexClient";
 
 export type StepTemplate = {
@@ -104,7 +105,8 @@ export class TrajectoryRunner {
   ): Promise<TrajectoryStep> {
     if (cachedStep) {
       try {
-        await this.stagehand.act(
+        await actOrThrow(
+          this.stagehand,
           this.withArguments(cachedStep.action as Action, template),
         );
         result.replayedSteps += 1;
@@ -115,7 +117,7 @@ export class TrajectoryRunner {
     }
 
     const action = await this.resolve(template);
-    await this.stagehand.act(action);
+    await actOrThrow(this.stagehand, action);
     if (cachedStep) {
       result.healedSteps += 1;
       return {
