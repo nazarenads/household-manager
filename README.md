@@ -68,7 +68,15 @@ pnpm --filter @household/bot dev
 ```
 
 Commands include `/stock`, `/low`, `/add <item> [qty]`, `/use <item> [qty]`,
-`/out <item>`, `/set <item> <count>`, `/cart`, and `/jobs`.
+`/out <item>`, `/set <item> <count>`, `/cart`, and `/jobs`. Plain text like
+"used up the coffee" goes through the parser tier (model from `ai_config`);
+low-confidence parses ask before writing, and ambiguous item names offer
+inline-keyboard choices.
+
+The bot also pushes notifications to the allowed chats: new proposed carts
+(Approve button), checkout summaries awaiting confirmation (screenshot +
+total + Confirm button, withheld when the summary diff fails policy), captcha
+pauses, completions, and a Sunday-evening reconciliation nudge.
 
 For deployed Convex with Clerk enabled, set `BOT_CONVEX_TOKEN` in the bot
 environment and in Convex env vars. The same shared secret pattern can reuse
@@ -89,8 +97,16 @@ WORKER_PROFILE_ROOT=~/.household-manager/profiles
 WORKER_SECRETS_FILE=/path/to/secrets.json    # chmod 600; see src/secrets.ts schema
 WORKER_CDP_PORT=9222
 WORKER_HEADLESS=false         # keep headful on the VPS (noVNC recovery, bot posture)
+HARNESS_ALLOW_API_BILLING=false  # D11: harness child only gets ANTHROPIC_API_KEY when "true"
+HARNESS_CLI=claude            # optional override of executor_config.harness_cli
 pnpm --filter @household/worker dev
 ```
+
+Executor routing is resolved when a cart is queued: explicit choice >
+per-store override > explorer executor for a store with no recorded
+trajectories (first contact) > configured default. The harness executor runs
+`claude -p` with only the Playwright MCP attached to the worker's Chrome over
+CDP — no shell or filesystem tools, and card entry never goes through it.
 
 One-time per store, log in manually so the persistent profile holds the
 session:

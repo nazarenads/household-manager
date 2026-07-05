@@ -5,6 +5,7 @@ import { WorkerConvex, type JobDoc } from "./convexClient";
 import { BrowserManager, expandHome } from "./browser";
 import { loadSecrets, type WorkerSecrets } from "./secrets";
 import { StagehandExecutor } from "./executors/stagehand";
+import { HarnessExecutor } from "./executors/harness";
 import { deleteLocalScreenshot } from "./screenshot";
 import {
   ExecutorLimitError,
@@ -54,6 +55,17 @@ async function main() {
     secrets,
     screenshotDir,
   });
+  const executorConfig = await convex.getExecutorConfig();
+  const harnessExecutor = new HarnessExecutor({
+    browser,
+    secrets,
+    screenshotDir,
+    mcpConfigDir: screenshotDir,
+    cli:
+      env.HARNESS_CLI ??
+      (executorConfig?.harness_cli === "codex" ? "codex" : "claude"),
+    allowApiBilling: env.HARNESS_ALLOW_API_BILLING,
+  });
 
   let queue: JobDoc[] = [];
   let busy = false;
@@ -80,14 +92,8 @@ async function main() {
     if (!claimed) return; // taken, already running, or no longer queued
     console.log(`[worker] claimed job ${claimed._id} (${claimed.executor})`);
 
-    if (claimed.executor !== "stagehand") {
-      await convex.fail(
-        claimed._id,
-        "Harness executor routing lands in Phase 4; re-queue with stagehand",
-      );
-      return;
-    }
-    const executor: Executor = stagehandExecutor;
+    const executor: Executor =
+      claimed.executor === "harness" ? harnessExecutor : stagehandExecutor;
 
     const work = await convex.getWorkContext(claimed._id);
     if (!work) {

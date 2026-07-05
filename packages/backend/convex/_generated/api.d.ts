@@ -17,6 +17,7 @@ import type * as items from "../items.js";
 import type * as jobs from "../jobs.js";
 import type * as ledger from "../ledger.js";
 import type * as lib_auth from "../lib/auth.js";
+import type * as lib_executors from "../lib/executors.js";
 import type * as lib_state from "../lib/state.js";
 import type * as parser from "../parser.js";
 import type * as reorder from "../reorder.js";
@@ -41,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   jobs: typeof jobs;
   ledger: typeof ledger;
   "lib/auth": typeof lib_auth;
+  "lib/executors": typeof lib_executors;
   "lib/state": typeof lib_state;
   parser: typeof parser;
   reorder: typeof reorder;

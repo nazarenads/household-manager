@@ -4,6 +4,7 @@ import type { CommandContext, Context } from "grammy";
 import { z } from "zod";
 import { api } from "@household/backend/convex/_generated/api";
 import type { Id } from "@household/backend/convex/_generated/dataModel";
+import { startNotifier } from "./notifier";
 
 const rawEnvSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
@@ -35,6 +36,32 @@ const botToken = rawEnv.BOT_CONVEX_TOKEN;
 type StockRow = Awaited<ReturnType<typeof getStock>>[number];
 type CartRow = Awaited<ReturnType<typeof getCarts>>[number];
 type JobRow = Awaited<ReturnType<typeof getAwaitingJobs>>[number];
+
+interface PendingAction {
+  op: "add" | "use" | "out" | "set";
+  qty?: number | undefined;
+  count?: number | undefined;
+  itemSearch?: string | undefined;
+  sourceUser: string;
+}
+
+const pendingActions = new Map<string, PendingAction>();
+let pendingActionCounter = 0;
+
+function generateShortId(): string {
+  pendingActionCounter = (pendingActionCounter + 1) % 1000000;
+  return `${pendingActionCounter}`;
+}
+
+function storePendingAction(action: PendingAction): string {
+  const id = generateShortId();
+  pendingActions.set(id, action);
+  if (pendingActions.size > 100) {
+    const firstKey = pendingActions.keys().next().value;
+    if (firstKey) pendingActions.delete(firstKey);
+  }
+  return id;
+}
 
 function parseIdSet(value?: string) {
   return new Set(
@@ -189,6 +216,31 @@ async function replyError(ctx: Context, error: unknown) {
   await ctx.reply(`I couldn't do that: ${message}`);
 }
 
+async function handleAmbiguousResult(
+  ctx: Context,
+  candidates: Array<{ item_id: string; name: string }>,
+  op: "add" | "use" | "out" | "set",
+  qty?: number | undefined,
+  count?: number | undefined,
+) {
+  const sourceUser = actorFor(ctx);
+  const action: PendingAction = {
+    op,
+    sourceUser,
+  };
+  if (qty !== undefined) action.qty = qty;
+  if (count !== undefined) action.count = count;
+  const shortId = storePendingAction(action);
+
+  const keyboard = new InlineKeyboard();
+  for (const candidate of candidates) {
+    // pick:<counter>:<convex id> stays well under Telegram's 64-byte limit.
+    keyboard.text(candidate.name, `pick:${shortId}:${candidate.item_id}`).row();
+  }
+
+  await ctx.reply("Which item did you mean?", { reply_markup: keyboard });
+}
+
 bot.use(async (ctx, next) => {
   if (!isAllowed(ctx)) return;
   await next();
@@ -207,6 +259,8 @@ bot.command(["start", "help"], async (ctx) => {
       "/set <item> <count> - reconcile exact stock",
       "/cart - review active carts",
       "/jobs - confirm waiting checkout summaries",
+      "",
+      "Or just tell me things like 'used up the coffee'",
     ].join("\n"),
   );
 });
@@ -235,13 +289,17 @@ bot.command("low", async (ctx) => {
 bot.command("add", async (ctx) => {
   try {
     const { itemSearch, qty } = parseItemQty(commandArgs(ctx), 1);
-    const row = await convex.mutation(api.bot.logStock, {
+    const result = await convex.mutation(api.bot.logStock, {
       botToken,
       itemSearch,
       delta: qty,
       sourceUser: actorFor(ctx),
     });
-    await ctx.reply(formatStockChange(row, "Added"));
+    if (result.kind === "ambiguous") {
+      await handleAmbiguousResult(ctx, result.candidates, "add", qty);
+    } else {
+      await ctx.reply(formatStockChange(result.row, "Added"));
+    }
   } catch (error) {
     await replyError(ctx, error);
   }
@@ -250,13 +308,17 @@ bot.command("add", async (ctx) => {
 bot.command("use", async (ctx) => {
   try {
     const { itemSearch, qty } = parseItemQty(commandArgs(ctx), 1);
-    const row = await convex.mutation(api.bot.logStock, {
+    const result = await convex.mutation(api.bot.logStock, {
       botToken,
       itemSearch,
       delta: -qty,
       sourceUser: actorFor(ctx),
     });
-    await ctx.reply(formatStockChange(row, "Used"));
+    if (result.kind === "ambiguous") {
+      await handleAmbiguousResult(ctx, result.candidates, "use", qty);
+    } else {
+      await ctx.reply(formatStockChange(result.row, "Used"));
+    }
   } catch (error) {
     await replyError(ctx, error);
   }
@@ -266,14 +328,18 @@ bot.command("out", async (ctx) => {
   try {
     const itemSearch = commandArgs(ctx);
     if (!itemSearch) throw new Error("Use /out <item>.");
-    const row = await convex.mutation(api.bot.reconcileStock, {
+    const result = await convex.mutation(api.bot.reconcileStock, {
       botToken,
       itemSearch,
       actualCount: 0,
       sourceUser: actorFor(ctx),
       note: "Marked out from Telegram",
     });
-    await ctx.reply(formatStockChange(row, "Marked out"));
+    if (result.kind === "ambiguous") {
+      await handleAmbiguousResult(ctx, result.candidates, "out", undefined, 0);
+    } else {
+      await ctx.reply(formatStockChange(result.row, "Marked out"));
+    }
   } catch (error) {
     await replyError(ctx, error);
   }
@@ -282,14 +348,24 @@ bot.command("out", async (ctx) => {
 bot.command("set", async (ctx) => {
   try {
     const { itemSearch, actualCount } = parseSetArgs(commandArgs(ctx));
-    const row = await convex.mutation(api.bot.reconcileStock, {
+    const result = await convex.mutation(api.bot.reconcileStock, {
       botToken,
       itemSearch,
       actualCount,
       sourceUser: actorFor(ctx),
       note: "Reconciled from Telegram",
     });
-    await ctx.reply(formatStockChange(row, "Set"));
+    if (result.kind === "ambiguous") {
+      await handleAmbiguousResult(
+        ctx,
+        result.candidates,
+        "set",
+        undefined,
+        actualCount,
+      );
+    } else {
+      await ctx.reply(formatStockChange(result.row, "Set"));
+    }
   } catch (error) {
     await replyError(ctx, error);
   }
@@ -326,6 +402,88 @@ bot.command("jobs", async (ctx) => {
       await ctx.reply(formatJob(job), { reply_markup: jobKeyboard(job) });
     }
   } catch (error) {
+    await replyError(ctx, error);
+  }
+});
+
+bot.callbackQuery(/^pick:(\d+):(.+)$/, async (ctx) => {
+  try {
+    const shortId = ctx.match[1]!;
+    const encodedItemId = ctx.match[2]!;
+    const pending = pendingActions.get(shortId);
+    if (!pending) {
+      await ctx.answerCallbackQuery("Expired, try again");
+      return;
+    }
+
+    const itemId = encodedItemId as Id<"items">;
+    const sourceUser = pending!.sourceUser;
+    const delta =
+      pending.op === "add"
+        ? (pending.qty ?? 1)
+        : pending.op === "use"
+          ? -(pending.qty ?? 1)
+          : 0;
+    const actualCount =
+      pending.op === "set"
+        ? (pending.count ?? 0)
+        : pending.op === "out"
+          ? 0
+          : undefined;
+
+    if (pending.op === "add" || pending.op === "use") {
+      const result = await convex.mutation(api.bot.logStock, {
+        botToken,
+        itemSearch: "",
+        itemId,
+        delta,
+        sourceUser,
+      });
+      if (result.kind === "logged") {
+        const verb = pending.op === "add" ? "Added" : "Used";
+        await ctx.answerCallbackQuery("Applied");
+        await ctx.reply(formatStockChange(result.row, verb));
+      } else {
+        await ctx.answerCallbackQuery("Still ambiguous");
+        await ctx.reply("Still ambiguous, pick again:");
+        await handleAmbiguousResult(
+          ctx,
+          result.candidates,
+          pending.op,
+          pending.qty,
+        );
+      }
+    } else if (pending.op === "out" || pending.op === "set") {
+      const result = await convex.mutation(api.bot.reconcileStock, {
+        botToken,
+        itemSearch: "",
+        itemId,
+        actualCount: actualCount ?? 0,
+        sourceUser,
+        note:
+          pending.op === "out"
+            ? "Marked out from Telegram"
+            : "Reconciled from Telegram",
+      });
+      if (result.kind === "logged") {
+        const verb = pending.op === "out" ? "Marked out" : "Set";
+        await ctx.answerCallbackQuery("Applied");
+        await ctx.reply(formatStockChange(result.row, verb));
+      } else {
+        await ctx.answerCallbackQuery("Still ambiguous");
+        await ctx.reply("Still ambiguous, pick again:");
+        await handleAmbiguousResult(
+          ctx,
+          result.candidates,
+          pending.op,
+          undefined,
+          pending.count,
+        );
+      }
+    }
+    pendingActions.delete(shortId);
+  } catch (error) {
+    await ctx.answerCallbackQuery("Failed");
     await replyError(ctx, error);
   }
 });
@@ -380,6 +538,112 @@ bot.callbackQuery(/^job:confirm:(.+)$/, async (ctx) => {
   }
 });
 
+bot.on("message:text", async (ctx) => {
+  const text = ctx.message.text;
+  if (text.startsWith("/")) return;
+
+  try {
+    const parsed = await convex.action(api.bot.parseText, {
+      botToken,
+      text,
+    });
+
+    if (parsed.confidence >= 0.8) {
+      const result = await convex.mutation(api.bot.logStock, {
+        botToken,
+        itemSearch: parsed.item,
+        delta: parsed.delta,
+        sourceUser: actorFor(ctx),
+      });
+      if (result.kind === "ambiguous") {
+        await handleAmbiguousResult(
+          ctx,
+          result.candidates,
+          parsed.delta > 0 ? "add" : "use",
+          Math.abs(parsed.delta),
+        );
+      } else {
+        const verb = parsed.delta > 0 ? "Added" : "Used";
+        await ctx.reply(formatStockChange(result.row, verb));
+      }
+    } else if (parsed.confidence >= 0.5 && parsed.confidence < 0.8) {
+      const sign = parsed.delta > 0 ? "+" : "";
+      const verb = parsed.delta > 0 ? "add" : "use";
+      const quantity = Math.abs(parsed.delta);
+      const sourceUser = actorFor(ctx);
+      const action: PendingAction = {
+        op: verb as "add" | "use",
+        qty: quantity,
+        itemSearch: parsed.item,
+        sourceUser,
+      };
+      const shortId = storePendingAction(action);
+
+      const keyboard = new InlineKeyboard()
+        .text("Yes", `apply:${shortId}`)
+        .text("Cancel", `cancel:${shortId}`);
+
+      await ctx.reply(`Log ${sign}${quantity} ${parsed.item}?`, {
+        reply_markup: keyboard,
+      });
+    } else {
+      await ctx.reply(
+        "I didn't understand that. Use /add or /use, or tell me more clearly.",
+      );
+    }
+  } catch (error) {
+    console.error("parseText error:", error);
+    await replyError(ctx, error);
+  }
+});
+
+bot.callbackQuery(/^apply:(\d+)$/, async (ctx) => {
+  try {
+    const shortId = ctx.match[1]!;
+    const pending = pendingActions.get(shortId);
+    if (!pending) {
+      await ctx.answerCallbackQuery("Expired, try again");
+      return;
+    }
+
+    const sourceUser = pending!.sourceUser;
+    const itemSearch = pending!.itemSearch ?? "";
+    const delta =
+      pending.op === "add" ? (pending.qty ?? 1) : -(pending.qty ?? 1);
+    const result = await convex.mutation(api.bot.logStock, {
+      botToken,
+      itemSearch,
+      delta,
+      sourceUser,
+    });
+
+    if (result.kind === "ambiguous") {
+      await ctx.answerCallbackQuery("Multiple items matched");
+      await handleAmbiguousResult(
+        ctx,
+        result.candidates,
+        pending.op,
+        pending.qty,
+      );
+    } else {
+      const verb = pending.op === "add" ? "Added" : "Used";
+      await ctx.answerCallbackQuery("Logged");
+      await ctx.reply(formatStockChange(result.row, verb));
+    }
+    pendingActions.delete(shortId);
+  } catch (error) {
+    await ctx.answerCallbackQuery("Failed");
+    await replyError(ctx, error);
+  }
+});
+
+bot.callbackQuery(/^cancel:(\d+)$/, async (ctx) => {
+  const shortId = ctx.match[1]!;
+  pendingActions.delete(shortId);
+  await ctx.answerCallbackQuery("Cancelled");
+  await ctx.reply("Cancelled.");
+});
+
 bot.catch((err) => {
   const ctx = err.ctx;
   console.error(`Bot error while handling update ${ctx.update.update_id}`);
@@ -408,3 +672,5 @@ void bot.start({
     console.log(`Household Manager bot running as @${info.username}`);
   },
 });
+
+startNotifier(bot, convexUrl, botToken, allowedChatIds, allowedUserIds);

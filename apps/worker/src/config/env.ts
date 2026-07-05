@@ -16,6 +16,13 @@ const envSchema = z.object({
   // Billing-sensitive (D11): must be set deliberately for the Stagehand path;
   // never assumed present.
   ANTHROPIC_API_KEY: z.string().optional(),
+  // D11: the harness child process only inherits ANTHROPIC_API_KEY (API
+  // billing instead of subscription) when this is explicitly "true".
+  HARNESS_ALLOW_API_BILLING: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true"),
+  HARNESS_CLI: z.enum(["claude", "codex"]).optional(),
 });
 
 export type WorkerEnv = z.infer<typeof envSchema>;

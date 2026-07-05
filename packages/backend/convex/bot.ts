@@ -1,7 +1,17 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { generateObject } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
+import { action, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+
+const botParserSchema = z.object({
+  item: z.string(),
+  delta: z.number(),
+  confidence: z.number().min(0).max(1),
+});
 import { requireBotToken } from "./lib/auth";
 import {
   assertCartTransition,
@@ -9,6 +19,7 @@ import {
   type CartStatus,
   type PurchaseJobStatus,
 } from "./lib/state";
+import { resolveExecutor } from "./lib/executors";
 
 type Ctx = QueryCtx | MutationCtx;
 
@@ -47,7 +58,7 @@ async function activeItemsWithStock(ctx: Ctx) {
   return rows.sort((a, b) => a.item.name.localeCompare(b.item.name));
 }
 
-async function findActiveItem(ctx: Ctx, search: string) {
+async function matchActiveItems(ctx: Ctx, search: string) {
   const needle = normalizeSearch(search);
   if (!needle) throw new ConvexError("Item name is required");
 
@@ -55,29 +66,50 @@ async function findActiveItem(ctx: Ctx, search: string) {
   const exactMatches = rows.filter(({ item }) =>
     itemSearchTerms(item).includes(needle),
   );
-  const matches =
-    exactMatches.length > 0
-      ? exactMatches
-      : rows.filter(({ item }) =>
-          itemSearchTerms(item).some(
-            (term) => term.includes(needle) || needle.includes(term),
-          ),
-        );
+  return exactMatches.length > 0
+    ? exactMatches
+    : rows.filter(({ item }) =>
+        itemSearchTerms(item).some(
+          (term) => term.includes(needle) || needle.includes(term),
+        ),
+      );
+}
 
+type ItemResolution =
+  | { kind: "match"; item: Doc<"items">; currentStock: number }
+  | {
+      kind: "ambiguous";
+      candidates: Array<{ item_id: Id<"items">; name: string }>;
+    };
+
+async function resolveActiveItem(
+  ctx: Ctx,
+  search: string,
+  itemId?: Id<"items">,
+): Promise<ItemResolution> {
+  if (itemId) {
+    const item = await ctx.db.get(itemId);
+    if (!item || !item.active) throw new ConvexError("Item not found");
+    return {
+      kind: "match",
+      item,
+      currentStock: await currentStockForItem(ctx, itemId),
+    };
+  }
+  const matches = await matchActiveItems(ctx, search);
   if (matches.length === 0) {
     throw new ConvexError(`No active item matched "${search}"`);
   }
   if (matches.length > 1) {
-    throw new ConvexError(
-      `Multiple items matched "${search}": ${matches
-        .slice(0, 5)
-        .map(({ item }) => item.name)
-        .join(", ")}`,
-    );
+    return {
+      kind: "ambiguous",
+      candidates: matches
+        .slice(0, 6)
+        .map(({ item }) => ({ item_id: item._id, name: item.name })),
+    };
   }
-  const match = matches[0];
-  if (!match) throw new ConvexError(`No active item matched "${search}"`);
-  return match;
+  const match = matches[0]!;
+  return { kind: "match", ...match };
 }
 
 function serializeStockRow(row: { item: Doc<"items">; currentStock: number }) {
@@ -159,6 +191,7 @@ export const logStock = mutation({
   args: {
     botToken: v.string(),
     itemSearch: v.string(),
+    itemId: v.optional(v.id("items")),
     delta: v.number(),
     sourceUser: v.optional(v.string()),
     note: v.optional(v.string()),
@@ -168,20 +201,30 @@ export const logStock = mutation({
     if (args.delta === 0) {
       throw new ConvexError("Stock delta must not be zero");
     }
-    const match = await findActiveItem(ctx, args.itemSearch);
+    const resolution = await resolveActiveItem(
+      ctx,
+      args.itemSearch,
+      args.itemId,
+    );
+    if (resolution.kind === "ambiguous") {
+      return { kind: "ambiguous" as const, candidates: resolution.candidates };
+    }
     const now = Date.now();
     await ctx.db.insert("stock_events", {
-      item_id: match.item._id,
+      item_id: resolution.item._id,
       delta: args.delta,
       reason: "telegram",
       source_user: args.sourceUser ?? "telegram",
       ...(args.note ? { note: args.note } : {}),
       created_at: now,
     });
-    return serializeStockRow({
-      item: match.item,
-      currentStock: match.currentStock + args.delta,
-    });
+    return {
+      kind: "logged" as const,
+      row: serializeStockRow({
+        item: resolution.item,
+        currentStock: resolution.currentStock + args.delta,
+      }),
+    };
   },
 });
 
@@ -189,6 +232,7 @@ export const reconcileStock = mutation({
   args: {
     botToken: v.string(),
     itemSearch: v.string(),
+    itemId: v.optional(v.id("items")),
     actualCount: v.number(),
     sourceUser: v.optional(v.string()),
     note: v.optional(v.string()),
@@ -198,11 +242,18 @@ export const reconcileStock = mutation({
     if (args.actualCount < 0) {
       throw new ConvexError("Actual count must be zero or greater");
     }
-    const match = await findActiveItem(ctx, args.itemSearch);
-    const delta = args.actualCount - match.currentStock;
+    const resolution = await resolveActiveItem(
+      ctx,
+      args.itemSearch,
+      args.itemId,
+    );
+    if (resolution.kind === "ambiguous") {
+      return { kind: "ambiguous" as const, candidates: resolution.candidates };
+    }
+    const delta = args.actualCount - resolution.currentStock;
     if (delta !== 0) {
       await ctx.db.insert("stock_events", {
-        item_id: match.item._id,
+        item_id: resolution.item._id,
         delta,
         reason: "reconciliation",
         source_user: args.sourceUser ?? "telegram",
@@ -210,10 +261,13 @@ export const reconcileStock = mutation({
         created_at: Date.now(),
       });
     }
-    return serializeStockRow({
-      item: match.item,
-      currentStock: args.actualCount,
-    });
+    return {
+      kind: "logged" as const,
+      row: serializeStockRow({
+        item: resolution.item,
+        currentStock: args.actualCount,
+      }),
+    };
   },
 });
 
@@ -337,12 +391,13 @@ export const queueCart = mutation({
       .first();
     if (openJob) return openJob._id;
 
-    const config = (await ctx.db.query("executor_config").first()) ?? {
-      default_executor: "stagehand" as const,
-    };
     const store = await ctx.db.get(cart.store_id);
-    const executor =
-      args.executor ?? store?.executor_override ?? config.default_executor;
+    const executor = await resolveExecutor(
+      ctx,
+      store,
+      cart.store_id,
+      args.executor,
+    );
     const now = Date.now();
     const jobId = await ctx.db.insert("purchase_jobs", {
       cart_id: cart._id,
@@ -405,8 +460,17 @@ export const jobs = query({
           executor: job.executor,
           order_summary_total: job.order_summary_total,
           order_summary_currency: job.order_summary_currency,
+          order_summary_screenshot_url: job.order_summary_screenshot
+            ? await ctx.storage.getUrl(job.order_summary_screenshot)
+            : null,
+          summary_line_items: job.summary_line_items,
+          summary_shipping_total: job.summary_shipping_total,
           summary_delivery_window: job.summary_delivery_window,
+          summary_diff: job.summary_diff as
+            | { withinPolicy: boolean; issues: Array<Record<string, unknown>> }
+            | undefined,
           confirm_deadline: job.confirm_deadline,
+          error: job.error,
           updated_at: job.updated_at,
           store: store
             ? {
@@ -418,6 +482,34 @@ export const jobs = query({
         };
       }),
     );
+  },
+});
+
+export const parseText = action({
+  args: { botToken: v.string(), text: v.string() },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ item: string; delta: number; confidence: number }> => {
+    requireBotToken(args);
+    const config: Doc<"ai_config"> | null = await ctx.runQuery(
+      internal.config.getAiConfigForTier,
+      { tier: "parser" },
+    );
+    const result = await generateObject({
+      model: anthropic(
+        config?.model ?? process.env.PARSER_MODEL ?? "claude-haiku-4-5",
+      ),
+      schema: botParserSchema,
+      prompt: [
+        "Parse a household stock update into an item name and signed delta.",
+        "Use negative deltas for consumption ('used up the coffee', 'no queda yerba'),",
+        "positive deltas for additions ('bought 2 packs of rice').",
+        "Set confidence low (< 0.5) if the message is not a stock update at all.",
+        `Message: ${args.text}`,
+      ].join("\n"),
+    });
+    return result.object;
   },
 });
 

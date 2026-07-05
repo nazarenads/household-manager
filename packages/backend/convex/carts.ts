@@ -4,6 +4,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { requireUser } from "./lib/auth";
 import { assertCartTransition, type CartStatus } from "./lib/state";
+import { resolveExecutor } from "./lib/executors";
 
 async function patchCartStatus(
   ctx: MutationCtx,
@@ -155,12 +156,13 @@ export const queueApproved = mutation({
       .first();
     if (openJob) return openJob._id;
 
-    const config = (await ctx.db.query("executor_config").first()) ?? {
-      default_executor: "stagehand" as const,
-    };
     const store = await ctx.db.get(cart.store_id);
-    const executor =
-      args.executor ?? store?.executor_override ?? config.default_executor;
+    const executor = await resolveExecutor(
+      ctx,
+      store,
+      cart.store_id,
+      args.executor,
+    );
     const now = Date.now();
     const jobId = await ctx.db.insert("purchase_jobs", {
       cart_id: cart._id,

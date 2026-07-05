@@ -1,6 +1,14 @@
 import { ConvexError, v } from "convex/values";
 import { internalQuery, mutation, query } from "./_generated/server";
-import { requireUser } from "./lib/auth";
+import { requireUser, requireWorkerToken } from "./lib/auth";
+
+export const getForWorker = query({
+  args: { workerToken: v.string() },
+  handler: async (ctx, args) => {
+    requireWorkerToken(args);
+    return (await ctx.db.query("executor_config").first()) ?? null;
+  },
+});
 
 export const getAiConfigForTier = internalQuery({
   args: {

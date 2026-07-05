@@ -117,6 +117,12 @@ export class WorkerConvex {
     });
   }
 
+  async getExecutorConfig(): Promise<Doc<"executor_config"> | null> {
+    return await this.client.query(api.config.getForWorker, {
+      workerToken: this.workerToken,
+    });
+  }
+
   async getWorkContext(
     jobId: Id<"purchase_jobs">,
   ): Promise<WorkContext | null> {
