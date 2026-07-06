@@ -135,13 +135,9 @@ export class StagehandExecutor implements Executor {
   }
 
   private async assertLoggedIn(session: BrowserSession, work: WorkContext) {
-    await session.page.goto(tiendanube.homeUrl(work.store.domain));
+    await session.page.goto(tiendanube.accountUrl(work.store.domain));
     await this.assertNoCaptcha(session);
-    const state = await session.stagehand.extract(
-      tiendanube.extractInstructions.loginState,
-      tiendanube.loginStateSchema,
-    );
-    if (!state.loggedIn) {
+    if (tiendanube.isLoginUrl(session.page.url())) {
       throw new HumanInterventionError(
         `Not logged in at ${work.store.domain}; log in over noVNC (profile persists), then resume`,
       );

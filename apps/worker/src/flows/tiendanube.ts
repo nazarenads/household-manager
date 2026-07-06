@@ -9,12 +9,6 @@ import type { StepTemplate } from "../trajectory";
  * so cached selectors replay unchanged across runs.
  */
 
-export const loginStateSchema = z.object({
-  loggedIn: z
-    .boolean()
-    .describe("True if a customer account is signed in on this page"),
-});
-
 export const captchaStateSchema = z.object({
   captchaVisible: z
     .boolean()
@@ -69,8 +63,6 @@ export const receiptExtractSchema = z.object({
 export type ReceiptExtract = z.infer<typeof receiptExtractSchema>;
 
 export const extractInstructions = {
-  loginState:
-    "Determine whether a customer account is currently logged in (look for account name, 'Mi cuenta', or a logout option versus 'Iniciar sesión').",
   captchaState:
     "Determine whether a captcha or robot-verification challenge is currently blocking interaction with the page.",
   summary:
@@ -85,6 +77,19 @@ export function cartUrl(domain: string) {
 
 export function homeUrl(domain: string) {
   return `https://${domain}/`;
+}
+
+/**
+ * Login state is checked by URL, not LLM judgment: Tienda Nube redirects
+ * /account to /account/login when no customer session exists, and many themes
+ * give the LLM nothing to distinguish (just a bare person icon either way).
+ */
+export function accountUrl(domain: string) {
+  return `https://${domain}/account`;
+}
+
+export function isLoginUrl(url: string) {
+  return url.includes("/account/login");
 }
 
 /** Add-to-cart from a product page reached deterministically via goto(). */
