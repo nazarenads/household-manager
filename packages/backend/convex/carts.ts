@@ -3,7 +3,11 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { requireUser } from "./lib/auth";
-import { assertCartTransition, type CartStatus } from "./lib/state";
+import {
+  assertCartTransition,
+  assertJobTransition,
+  type CartStatus,
+} from "./lib/state";
 import { resolveExecutor } from "./lib/executors";
 
 async function patchCartStatus(
@@ -196,15 +200,53 @@ export const queueApproved = mutation({
 
 // CLI-only iteration path while validating store flows, e.g.:
 //   npx convex run carts:requeueFromCli '{"cart_id":"..."}'
-// Re-approves a failed/cancelled cart and queues it in one step.
+// Supersedes any stale open job, re-approves the cart, and queues it.
 export const requeueFromCli = internalMutation({
   args: { cart_id: v.id("carts") },
   handler: async (ctx, args): Promise<Id<"purchase_jobs">> => {
     const actor = "admin-cli";
     const cart = await ctx.db.get(args.cart_id);
     if (!cart) throw new ConvexError("Cart not found");
+
+    const openJobs = await ctx.db
+      .query("purchase_jobs")
+      .withIndex("by_cart", (q) => q.eq("cart_id", args.cart_id))
+      .filter((q) =>
+        q.and(
+          q.neq(q.field("status"), "done"),
+          q.neq(q.field("status"), "failed"),
+          q.neq(q.field("status"), "expired"),
+        ),
+      )
+      .collect();
+    for (const job of openJobs) {
+      const to =
+        job.status === "awaiting_confirm"
+          ? ("expired" as const)
+          : ["queued", "paused_captcha", "paused_limit"].includes(job.status)
+            ? ("failed" as const)
+            : null;
+      if (!to) {
+        throw new ConvexError(
+          `Cart has an active job in status "${job.status}"; let it finish first`,
+        );
+      }
+      assertJobTransition(job.status, to);
+      const now = Date.now();
+      await ctx.db.patch(job._id, { status: to, updated_at: now });
+      await ctx.db.insert("job_events", {
+        job_id: job._id,
+        from_status: job.status,
+        to_status: to,
+        actor,
+        note: "Superseded by CLI requeue",
+        created_at: now,
+      });
+    }
+
     if (cart.status !== "approved") {
-      await patchCartStatus(ctx, cart, "approved", actor, "CLI requeue");
+      const current = (await ctx.db.get(args.cart_id))!;
+      await patchCartStatus(ctx, current, "approved", actor, "CLI requeue");
     }
     const fresh = (await ctx.db.get(args.cart_id))!;
     return await queueCartJob(ctx, fresh, actor);

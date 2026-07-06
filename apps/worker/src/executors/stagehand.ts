@@ -65,6 +65,7 @@ export class StagehandExecutor implements Executor {
     try {
       await this.assertLoggedIn(session, work);
       await this.buildCart(session, work);
+      await this.reconcileCartQuantities(session, work);
       await this.checkoutToSummary(session, work);
       const summary = await this.extractSummary(session, work);
       console.log(
@@ -194,6 +195,77 @@ export class StagehandExecutor implements Executor {
         );
       }
     }
+  }
+
+  /**
+   * LLM-set product-page quantities don't reliably register (themes keep
+   * their own counter and ignore programmatic fills), so verify and fix the
+   * quantities on the cart page deterministically. Any residue the retries
+   * can't fix is still caught by the D14 summary diff before confirm.
+   */
+  private async reconcileCartQuantities(
+    session: BrowserSession,
+    work: WorkContext,
+  ) {
+    for (let round = 0; round < 3; round += 1) {
+      await session.page.goto(tiendanube.cartUrl(work.store.domain));
+      await this.dismissOverlays(session);
+      await session.page.waitForTimeout(1000);
+      const rows = await session.page.evaluate(() =>
+        [
+          ...document.querySelectorAll(
+            "input[type=number], input[name*=quantity], input[name*=cantidad]",
+          ),
+        ].map((input, index) => ({
+          index,
+          value: Number((input as HTMLInputElement).value),
+          rowText: (
+            input.closest("tr, [class*=item], [class*=row]")?.textContent ?? ""
+          )
+            .trim()
+            .toLowerCase()
+            .slice(0, 160),
+        })),
+      );
+      const fixes: Array<{ index: number; qty: number }> = [];
+      for (const line of work.cart.lines) {
+        const label = (
+          line.store_item?.name ?? line.item_name
+        ).toLowerCase();
+        const row = rows.find((r) => r.rowText.includes(label));
+        if (row && row.value !== line.qty) {
+          fixes.push({ index: row.index, qty: line.qty });
+        }
+      }
+      if (fixes.length === 0) {
+        console.log("[stagehand] cart quantities verified");
+        return;
+      }
+      console.log(
+        `[stagehand] adjusting cart quantities: ${JSON.stringify(fixes)}`,
+      );
+      for (const fix of fixes) {
+        await session.page.evaluate(
+          (arg: { index: number; qty: number }) => {
+            const input = [
+              ...document.querySelectorAll(
+                "input[type=number], input[name*=quantity], input[name*=cantidad]",
+              ),
+            ][arg.index] as HTMLInputElement | undefined;
+            if (!input) return false;
+            input.value = String(arg.qty);
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+          },
+          fix,
+        );
+        await session.page.waitForTimeout(2500);
+      }
+    }
+    console.log(
+      "[stagehand] cart quantity reconciliation exhausted retries; the summary diff gate will flag any residue",
+    );
   }
 
   private async checkoutToSummary(session: BrowserSession, work: WorkContext) {
