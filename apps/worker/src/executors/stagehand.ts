@@ -216,26 +216,61 @@ export class StagehandExecutor implements Executor {
           ...document.querySelectorAll(
             "input[type=number], input[name*=quantity], input[name*=cantidad]",
           ),
-        ].map((input, index) => ({
-          index,
-          value: Number((input as HTMLInputElement).value),
-          rowText: (
-            input.closest("tr, [class*=item], [class*=row]")?.textContent ?? ""
-          )
-            .trim()
-            .toLowerCase()
-            .slice(0, 160),
-        })),
+        ].map((input, index) => {
+          // Climb until an ancestor carries real text (the immediate
+          // wrappers around qty inputs are often empty flex shells).
+          let node = input.parentElement;
+          let text = "";
+          for (let depth = 0; depth < 6 && node; depth += 1) {
+            text = (node.textContent ?? "").trim();
+            if (text.length > 20) break;
+            node = node.parentElement;
+          }
+          return {
+            index,
+            value: Number((input as HTMLInputElement).value),
+            rowText: text.toLowerCase().slice(0, 200),
+          };
+        }),
       );
       const fixes: Array<{ index: number; qty: number }> = [];
+      const matchedRowIndexes = new Set<number>();
+      const unmatchedLines: typeof work.cart.lines = [];
       for (const line of work.cart.lines) {
         const label = (
           line.store_item?.name ?? line.item_name
         ).toLowerCase();
-        const row = rows.find((r) => r.rowText.includes(label));
-        if (row && row.value !== line.qty) {
+        const row = rows.find(
+          (r) => !matchedRowIndexes.has(r.index) && r.rowText.includes(label),
+        );
+        if (!row) {
+          unmatchedLines.push(line);
+          continue;
+        }
+        matchedRowIndexes.add(row.index);
+        if (row.value !== line.qty) {
           fixes.push({ index: row.index, qty: line.qty });
         }
+      }
+      // Name matching can fail on themes that render names outside the row
+      // container; when the leftover counts line up 1:1, pair by position.
+      if (
+        unmatchedLines.length > 0 &&
+        rows.length === work.cart.lines.length
+      ) {
+        const leftoverRows = rows.filter(
+          (r) => !matchedRowIndexes.has(r.index),
+        );
+        for (const [i, line] of unmatchedLines.entries()) {
+          const row = leftoverRows[i];
+          if (row && row.value !== line.qty) {
+            fixes.push({ index: row.index, qty: line.qty });
+          }
+        }
+      } else if (unmatchedLines.length > 0) {
+        console.log(
+          `[stagehand] could not match ${unmatchedLines.length} cart line(s) to qty inputs (${rows.length} inputs on page)`,
+        );
       }
       if (fixes.length === 0) {
         console.log("[stagehand] cart quantities verified");
