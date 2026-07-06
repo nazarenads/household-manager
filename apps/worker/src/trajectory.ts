@@ -86,6 +86,8 @@ export class TrajectoryRunner {
         const step = await this.runStep(template, cachedStep, result);
         nextSteps.push(step);
         if (!cachedStep || step.action !== cachedStep.action) dirty = true;
+        // Let click-triggered navigations commit before the next observe().
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       } catch (error) {
         failure = error;
         break;
@@ -139,19 +141,22 @@ export class TrajectoryRunner {
   }
 
   /**
-   * Resolve the instruction and act on it, re-resolving once on failure:
-   * overlays and drawers animate between observe() and act(), so the first
-   * xpath is regularly stale by the time the click lands.
+   * Resolve the instruction and act on it, retrying the whole step once
+   * after a settle delay: overlays animate between observe() and act() (stale
+   * xpath), and a click that triggers navigation can leave the very next
+   * observe() talking to a dead CDP target (-32001) until the new document
+   * is attached.
    */
   private async resolveAndAct(template: StepTemplate): Promise<Action> {
-    const action = await this.resolve(template);
     try {
+      const action = await this.resolve(template);
       await actOrThrow(this.stagehand, action);
       return action;
     } catch (error) {
       console.log(
-        `[trajectory] explore act on ${template.key} failed (${message(error)}); re-observing once`,
+        `[trajectory] step ${template.key} failed (${message(error)}); retrying once after settle`,
       );
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       const retried = await this.resolve(template);
       await actOrThrow(this.stagehand, retried);
       return retried;

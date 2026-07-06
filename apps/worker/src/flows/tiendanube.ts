@@ -154,6 +154,11 @@ export function checkoutToSummarySteps(
         "Click the start-checkout button on the cart page (usually 'Iniciar compra' or 'Finalizar compra')",
     },
     {
+      key: "confirm-contact",
+      instruction:
+        "The checkout shows a personal-data step ('Datos personales') with the customer's saved contact details. Click its continue button (usually 'Continuar'). If this step is not shown, click the continue button of whatever checkout step is visible.",
+    },
+    {
       key: "choose-shipping",
       instruction: `Select the shipping/delivery option matching: ${shippingPreference}. If shipping is already selected and correct, click the continue button instead.`,
     },
