@@ -794,9 +794,11 @@ function DashboardApp() {
                     ) : null}
                   </div>
                   <div className="actions">
-                    {cart.status === "proposed" ? (
+                    {["proposed", "failed", "cancelled"].includes(
+                      cart.status,
+                    ) ? (
                       <button
-                        className="icon-btn primary"
+                        className="icon-btn labeled primary"
                         type="button"
                         aria-label="Approve cart"
                         disabled={pending !== null}
@@ -807,11 +809,12 @@ function DashboardApp() {
                         }
                       >
                         <Check size={18} />
+                        {cart.status === "proposed" ? "Approve" : "Re-approve"}
                       </button>
                     ) : null}
                     {cart.status === "approved" ? (
                       <button
-                        className="icon-btn primary"
+                        className="icon-btn labeled primary"
                         type="button"
                         aria-label="Queue cart"
                         disabled={pending !== null}
@@ -822,6 +825,7 @@ function DashboardApp() {
                         }
                       >
                         <ShoppingCart size={18} />
+                        Queue purchase
                       </button>
                     ) : null}
                     {["proposed", "approved"].includes(cart.status) ? (

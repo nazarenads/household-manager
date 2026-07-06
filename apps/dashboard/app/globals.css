@@ -260,6 +260,16 @@ select {
   color: var(--text);
 }
 
+.icon-btn.labeled {
+  width: auto;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .primary {
   background: var(--accent);
   border-color: var(--accent);
