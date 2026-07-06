@@ -71,8 +71,9 @@ export const extractInstructions = {
     "Extract the purchase confirmation: the order or confirmation number and the final charged total, plus the purchased lines with name, quantity, and price.",
 } as const;
 
+// Tienda Nube's cart page lives at /comprar; /cart renders the 404 template.
 export function cartUrl(domain: string) {
-  return `https://${domain}/cart`;
+  return `https://${domain}/comprar`;
 }
 
 export function homeUrl(domain: string) {
