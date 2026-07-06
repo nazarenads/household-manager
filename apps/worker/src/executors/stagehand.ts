@@ -134,8 +134,34 @@ export class StagehandExecutor implements Executor {
     });
   }
 
+  /**
+   * Cookie/consent banners overlay the header and quietly swallow clicks
+   * aimed at the search box and checkout buttons. Dismiss them
+   * deterministically after every navigation (single inline expression —
+   * Stagehand's evaluate serializer rejects named inner helpers).
+   */
+  private async dismissOverlays(session: BrowserSession) {
+    await session.page.waitForTimeout(800);
+    const clicked = await session.page.evaluate(
+      () =>
+        [...document.querySelectorAll("a, button")].filter(
+          (el) =>
+            (el as HTMLElement).offsetParent !== null &&
+            ["entendido", "aceptar", "acepto", "ok"].includes(
+              (el.textContent ?? "").trim().toLowerCase(),
+            ) &&
+            ((el as HTMLElement).click(), true),
+        ).length,
+    );
+    if (typeof clicked === "number" && clicked > 0) {
+      console.log(`[stagehand] dismissed ${clicked} consent overlay(s)`);
+      await session.page.waitForTimeout(500);
+    }
+  }
+
   private async assertLoggedIn(session: BrowserSession, work: WorkContext) {
     await session.page.goto(tiendanube.accountUrl(work.store.domain));
+    await this.dismissOverlays(session);
     await this.assertNoCaptcha(session);
     if (tiendanube.isLoginUrl(session.page.url())) {
       throw new HumanInterventionError(
@@ -150,6 +176,7 @@ export class StagehandExecutor implements Executor {
       const productUrl = line.store_item?.product_url;
       if (productUrl) {
         await session.page.goto(productUrl);
+        await this.dismissOverlays(session);
         await runner.runFlow(
           "add_to_cart",
           tiendanube.addToCartSteps(line.qty),
@@ -160,6 +187,7 @@ export class StagehandExecutor implements Executor {
           line.store_item?.name ??
           line.item_name;
         await session.page.goto(tiendanube.homeUrl(work.store.domain));
+        await this.dismissOverlays(session);
         await runner.runFlow(
           "add_to_cart_search",
           tiendanube.addToCartViaSearchSteps(searchTerm, line.qty),
@@ -170,6 +198,7 @@ export class StagehandExecutor implements Executor {
 
   private async checkoutToSummary(session: BrowserSession, work: WorkContext) {
     await session.page.goto(tiendanube.cartUrl(work.store.domain));
+    await this.dismissOverlays(session);
     const runner = this.runner(session, work.store._id);
     await runner.runFlow(
       "checkout_to_summary",

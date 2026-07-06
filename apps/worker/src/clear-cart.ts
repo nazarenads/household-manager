@@ -58,7 +58,8 @@ function snapshotCart() {
             .toLowerCase()
             .includes("quitar") ||
           (el.textContent ?? "").trim().toLowerCase() === "eliminar" ||
-          (el.textContent ?? "").trim().toLowerCase() === "quitar"),
+          (el.textContent ?? "").trim().toLowerCase() === "quitar" ||
+          (el.textContent ?? "").trim().toLowerCase() === "borrar"),
     ).length,
     looksEmpty:
       document.body.innerText.toLowerCase().includes("vacío") ||
@@ -81,7 +82,8 @@ function clickFirstDeleteControl() {
             .toLowerCase()
             .includes("quitar") ||
           (el.textContent ?? "").trim().toLowerCase() === "eliminar" ||
-          (el.textContent ?? "").trim().toLowerCase() === "quitar"),
+          (el.textContent ?? "").trim().toLowerCase() === "quitar" ||
+          (el.textContent ?? "").trim().toLowerCase() === "borrar"),
     );
     (control as HTMLElement | undefined)?.click();
     return Boolean(control);
