@@ -10,7 +10,8 @@
     "login": "tsx src/login.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "spike": "tsx src/spike.ts"
+    "spike": "tsx src/spike.ts",
+    "clear-cart": "tsx src/clear-cart.ts"
   },
   "dependencies": {
     "@browserbasehq/stagehand": "^3.6.0",

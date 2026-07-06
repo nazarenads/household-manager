@@ -21,6 +21,10 @@ export type FlowRunResult = {
   healedSteps: number;
 };
 
+function message(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function stepKeyOf(step: TrajectoryStep) {
   const separator = step.instruction.indexOf("::");
   return separator === -1
@@ -110,16 +114,19 @@ export class TrajectoryRunner {
           this.withArguments(cachedStep.action as Action, template),
         );
         result.replayedSteps += 1;
+        console.log(`[trajectory] replayed ${template.key}`);
         return cachedStep;
-      } catch {
-        // Fall through to a fresh LLM resolution (manual self-heal).
+      } catch (error) {
+        console.log(
+          `[trajectory] replay of ${template.key} failed (${message(error)}); healing`,
+        );
       }
     }
 
-    const action = await this.resolve(template);
-    await actOrThrow(this.stagehand, action);
+    const action = await this.resolveAndAct(template);
     if (cachedStep) {
       result.healedSteps += 1;
+      console.log(`[trajectory] healed ${template.key}`);
       return {
         instruction: encodeInstruction(template),
         action,
@@ -127,7 +134,28 @@ export class TrajectoryRunner {
       };
     }
     result.exploredSteps += 1;
+    console.log(`[trajectory] explored ${template.key}`);
     return { instruction: encodeInstruction(template), action };
+  }
+
+  /**
+   * Resolve the instruction and act on it, re-resolving once on failure:
+   * overlays and drawers animate between observe() and act(), so the first
+   * xpath is regularly stale by the time the click lands.
+   */
+  private async resolveAndAct(template: StepTemplate): Promise<Action> {
+    const action = await this.resolve(template);
+    try {
+      await actOrThrow(this.stagehand, action);
+      return action;
+    } catch (error) {
+      console.log(
+        `[trajectory] explore act on ${template.key} failed (${message(error)}); re-observing once`,
+      );
+      const retried = await this.resolve(template);
+      await actOrThrow(this.stagehand, retried);
+      return retried;
+    }
   }
 
   private async resolve(template: StepTemplate): Promise<Action> {

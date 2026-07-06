@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { requireUser } from "./lib/auth";
@@ -131,6 +131,56 @@ export const cancel = mutation({
   },
 });
 
+async function queueCartJob(
+  ctx: MutationCtx,
+  cart: Doc<"carts">,
+  actor: string,
+  explicitExecutor?: "stagehand" | "harness",
+): Promise<Id<"purchase_jobs">> {
+  if (cart.status !== "approved") {
+    throw new ConvexError("Only approved carts can be queued");
+  }
+  const openJob = await ctx.db
+    .query("purchase_jobs")
+    .withIndex("by_cart", (q) => q.eq("cart_id", cart._id))
+    .filter((q) =>
+      q.and(
+        q.neq(q.field("status"), "done"),
+        q.neq(q.field("status"), "failed"),
+        q.neq(q.field("status"), "expired"),
+      ),
+    )
+    .first();
+  if (openJob) return openJob._id;
+
+  const store = await ctx.db.get(cart.store_id);
+  const executor = await resolveExecutor(
+    ctx,
+    store,
+    cart.store_id,
+    explicitExecutor,
+  );
+  const now = Date.now();
+  const jobId = await ctx.db.insert("purchase_jobs", {
+    cart_id: cart._id,
+    store_id: cart.store_id,
+    status: "queued",
+    executor,
+    attempts: 0,
+    created_at: now,
+    updated_at: now,
+  });
+  await ctx.db.insert("job_events", {
+    job_id: jobId,
+    to_status: "queued",
+    actor,
+    note: "Cart queued for worker execution",
+    created_at: now,
+  });
+  await patchCartStatus(ctx, cart, "executing", actor, "Queued for purchase");
+  return jobId;
+}
+
 export const queueApproved = mutation({
   args: {
     cart_id: v.id("carts"),
@@ -140,47 +190,23 @@ export const queueApproved = mutation({
     const actor = await requireUser(ctx);
     const cart = await ctx.db.get(args.cart_id);
     if (!cart) throw new ConvexError("Cart not found");
-    if (cart.status !== "approved") {
-      throw new ConvexError("Only approved carts can be queued");
-    }
-    const openJob = await ctx.db
-      .query("purchase_jobs")
-      .withIndex("by_cart", (q) => q.eq("cart_id", args.cart_id))
-      .filter((q) =>
-        q.and(
-          q.neq(q.field("status"), "done"),
-          q.neq(q.field("status"), "failed"),
-          q.neq(q.field("status"), "expired"),
-        ),
-      )
-      .first();
-    if (openJob) return openJob._id;
+    return await queueCartJob(ctx, cart, actor, args.executor);
+  },
+});
 
-    const store = await ctx.db.get(cart.store_id);
-    const executor = await resolveExecutor(
-      ctx,
-      store,
-      cart.store_id,
-      args.executor,
-    );
-    const now = Date.now();
-    const jobId = await ctx.db.insert("purchase_jobs", {
-      cart_id: cart._id,
-      store_id: cart.store_id,
-      status: "queued",
-      executor,
-      attempts: 0,
-      created_at: now,
-      updated_at: now,
-    });
-    await ctx.db.insert("job_events", {
-      job_id: jobId,
-      to_status: "queued",
-      actor,
-      note: "Cart queued for worker execution",
-      created_at: now,
-    });
-    await patchCartStatus(ctx, cart, "executing", actor, "Queued for purchase");
-    return jobId;
+// CLI-only iteration path while validating store flows, e.g.:
+//   npx convex run carts:requeueFromCli '{"cart_id":"..."}'
+// Re-approves a failed/cancelled cart and queues it in one step.
+export const requeueFromCli = internalMutation({
+  args: { cart_id: v.id("carts") },
+  handler: async (ctx, args): Promise<Id<"purchase_jobs">> => {
+    const actor = "admin-cli";
+    const cart = await ctx.db.get(args.cart_id);
+    if (!cart) throw new ConvexError("Cart not found");
+    if (cart.status !== "approved") {
+      await patchCartStatus(ctx, cart, "approved", actor, "CLI requeue");
+    }
+    const fresh = (await ctx.db.get(args.cart_id))!;
+    return await queueCartJob(ctx, fresh, actor);
   },
 });
