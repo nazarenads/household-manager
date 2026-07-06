@@ -13,6 +13,10 @@ import * as tiendanube from "./flows/tiendanube";
  * Removal is DOM-first (zero LLM): click anything that looks like a cart-item
  * delete control, reload, repeat. Falls back to one observe/act per item if
  * the theme uses unrecognizable controls.
+ *
+ * NB: keep the page.evaluate() callbacks to a single inline expression tree —
+ * Stagehand's serializer throws an opaque "Uncaught" when the callback
+ * declares named inner helpers.
  */
 
 const [storeRef] = process.argv.slice(2);
@@ -41,54 +45,44 @@ const session = await browser.ensureSession(store._id);
 const { page, stagehand } = session;
 
 function snapshotCart() {
-  return page.evaluate(() => {
-    const isVisible = (el: Element) =>
-      (el as HTMLElement).offsetParent !== null;
-    const deleteControls = [
-      ...document.querySelectorAll("a, button"),
-    ].filter((el) => {
-      if (!isVisible(el)) return false;
-      const cls = (el.className?.toString() ?? "").toLowerCase();
-      const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-      const text = (el.textContent ?? "").trim().toLowerCase();
-      return (
-        cls.includes("delete") ||
-        cls.includes("remove") ||
-        aria.includes("eliminar") ||
-        aria.includes("quitar") ||
-        aria.includes("remove") ||
-        text === "eliminar" ||
-        text === "quitar"
-      );
-    });
-    const bodyText = document.body.innerText.toLowerCase();
-    const looksEmpty =
-      bodyText.includes("vacío") ||
-      bodyText.includes("vacio") ||
-      bodyText.includes("no hay productos");
-    return { deleteControlCount: deleteControls.length, looksEmpty };
-  });
+  return page.evaluate(() => ({
+    deleteControlCount: [...document.querySelectorAll("a, button")].filter(
+      (el) =>
+        (el as HTMLElement).offsetParent !== null &&
+        ((el.className?.toString() ?? "").toLowerCase().includes("delete") ||
+          (el.className?.toString() ?? "").toLowerCase().includes("remove") ||
+          (el.getAttribute("aria-label") ?? "")
+            .toLowerCase()
+            .includes("eliminar") ||
+          (el.getAttribute("aria-label") ?? "")
+            .toLowerCase()
+            .includes("quitar") ||
+          (el.textContent ?? "").trim().toLowerCase() === "eliminar" ||
+          (el.textContent ?? "").trim().toLowerCase() === "quitar"),
+    ).length,
+    looksEmpty:
+      document.body.innerText.toLowerCase().includes("vacío") ||
+      document.body.innerText.toLowerCase().includes("vacio") ||
+      document.body.innerText.toLowerCase().includes("no hay productos"),
+  }));
 }
 
 function clickFirstDeleteControl() {
   return page.evaluate(() => {
-    const isVisible = (el: Element) =>
-      (el as HTMLElement).offsetParent !== null;
-    const control = [...document.querySelectorAll("a, button")].find((el) => {
-      if (!isVisible(el)) return false;
-      const cls = (el.className?.toString() ?? "").toLowerCase();
-      const aria = (el.getAttribute("aria-label") ?? "").toLowerCase();
-      const text = (el.textContent ?? "").trim().toLowerCase();
-      return (
-        cls.includes("delete") ||
-        cls.includes("remove") ||
-        aria.includes("eliminar") ||
-        aria.includes("quitar") ||
-        aria.includes("remove") ||
-        text === "eliminar" ||
-        text === "quitar"
-      );
-    });
+    const control = [...document.querySelectorAll("a, button")].find(
+      (el) =>
+        (el as HTMLElement).offsetParent !== null &&
+        ((el.className?.toString() ?? "").toLowerCase().includes("delete") ||
+          (el.className?.toString() ?? "").toLowerCase().includes("remove") ||
+          (el.getAttribute("aria-label") ?? "")
+            .toLowerCase()
+            .includes("eliminar") ||
+          (el.getAttribute("aria-label") ?? "")
+            .toLowerCase()
+            .includes("quitar") ||
+          (el.textContent ?? "").trim().toLowerCase() === "eliminar" ||
+          (el.textContent ?? "").trim().toLowerCase() === "quitar"),
+    );
     (control as HTMLElement | undefined)?.click();
     return Boolean(control);
   });
