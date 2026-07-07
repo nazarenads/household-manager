@@ -280,21 +280,61 @@ export class StagehandExecutor implements Executor {
         `[stagehand] adjusting cart quantities: ${JSON.stringify(fixes)}`,
       );
       for (const fix of fixes) {
-        await session.page.evaluate(
-          (arg: { index: number; qty: number }) => {
-            const input = [
+        // Setting input.value doesn't persist (server state wins on reload);
+        // Tienda Nube themes mutate quantity through LS.plusQuantity /
+        // LS.minusQuantity (see the spinner onclick), which fire the AJAX
+        // cart update. Fall back to clicking the spinner controls.
+        const outcome = await session.page.evaluate(
+          async (arg: { index: number; qty: number }) => {
+            const inputs = [
               ...document.querySelectorAll(
                 "input[type=number], input[name*=quantity], input[name*=cantidad]",
               ),
-            ][arg.index] as HTMLInputElement | undefined;
-            if (!input) return false;
-            input.value = String(arg.qty);
-            input.dispatchEvent(new Event("input", { bubbles: true }));
-            input.dispatchEvent(new Event("change", { bubbles: true }));
-            return true;
+            ];
+            const input = inputs[arg.index] as HTMLInputElement | undefined;
+            if (!input) return "no-input";
+            const itemId = Number(input.getAttribute("data-item-id"));
+            const ls = (
+              window as unknown as {
+                LS?: {
+                  plusQuantity?: (id: number) => void;
+                  minusQuantity?: (id: number) => void;
+                };
+              }
+            ).LS;
+            let current = Number(input.value);
+            for (let guard = 0; guard < 15 && current !== arg.qty; guard += 1) {
+              if (current < arg.qty) {
+                if (ls?.plusQuantity && itemId) ls.plusQuantity(itemId);
+                else
+                  (
+                    input
+                      .closest("[class*=row], tr")
+                      ?.querySelector(
+                        "[data-component='quantity.plus'], [class*=plus]",
+                      ) as HTMLElement | null
+                  )?.click();
+              } else {
+                if (ls?.minusQuantity && itemId) ls.minusQuantity(itemId);
+                else
+                  (
+                    input
+                      .closest("[class*=row], tr")
+                      ?.querySelector(
+                        "[data-component='quantity.minus'], [class*=minus]",
+                      ) as HTMLElement | null
+                  )?.click();
+              }
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              current = Number(
+                (inputs[arg.index] as HTMLInputElement).value,
+              );
+            }
+            return `qty-now-${current}`;
           },
           fix,
         );
+        console.log(`[stagehand] quantity adjust outcome: ${outcome}`);
         await session.page.waitForTimeout(2500);
       }
     }
