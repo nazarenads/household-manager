@@ -145,6 +145,7 @@ export class HarnessExecutor implements Executor {
     // part of the harness prompt or transcript.
     await fillPaymentIfPresent(
       session.page,
+      session.cdpEndpoint,
       this.options.secrets,
       this.paymentRef(work),
     );

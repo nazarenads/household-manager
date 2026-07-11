@@ -25,6 +25,8 @@ const secretsSchema = z.object({
       number: z.string(),
       expiry: z.string(),
       cvv: z.string(),
+      /** Card holder document (DNI) — some AR checkouts require it. */
+      holderId: z.string().optional(),
     }),
   ),
 });

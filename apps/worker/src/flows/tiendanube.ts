@@ -67,25 +67,9 @@ export const receiptExtractSchema = z.object({
 
 export type ReceiptExtract = z.infer<typeof receiptExtractSchema>;
 
-export const deliveryOptionsSchema = z.object({
-  options: z
-    .array(z.string())
-    .describe(
-      "Every selectable delivery date/window option exactly as displayed, in chronological order (earliest first). Empty if the page offers no date choice.",
-    ),
-  selected: z
-    .string()
-    .optional()
-    .describe("The option currently selected, if any is marked selected"),
-});
-
-export type DeliveryOptionsExtract = z.infer<typeof deliveryOptionsSchema>;
-
 export const extractInstructions = {
   captchaState:
     "Determine whether a captcha or robot-verification challenge is currently blocking interaction with the page.",
-  deliveryOptions:
-    "List the delivery date or delivery window options the shipping step currently offers (calendar days, time slots, or labelled windows like 'Lunes 13/07'). Return them exactly as displayed, earliest first. Return an empty list if this step has no date/window choice.",
   summary:
     "Extract the order summary: every product line with name, quantity, unit price and line total, plus the shipping cost, the delivery window if shown, and the order total. Mark a line 'unavailable' if it is flagged out of stock, 'substituted' if the store replaced it.",
   receipt:
@@ -161,10 +145,11 @@ export function addToCartViaSearchSteps(
 }
 
 /**
- * The cart-to-summary journey is split into three flows so worker-owned code
- * can run between them (saved-address selection, the delivery-date gate).
- * All of them stop BEFORE any final purchase/confirm button (D3: the human
- * checkpoint lives between these flows and the confirm flow).
+ * The only LLM-driven step between the cart and the review page. Everything
+ * after it (Datos personales continue, delivery panel, card fill) is
+ * deterministic worker code: checkout pages contain the final purchase
+ * button ('Realizar pedido'), and an LLM heal once clicked dangerously close
+ * to it — no LLM click is allowed on those pages before human approval.
  */
 export function checkoutStartSteps(): StepTemplate[] {
   return [
@@ -173,44 +158,12 @@ export function checkoutStartSteps(): StepTemplate[] {
       instruction:
         "Click the start-checkout button on the cart page (usually 'Iniciar compra' or 'Finalizar compra')",
     },
-    {
-      key: "confirm-contact",
-      instruction:
-        "The checkout shows a personal-data step ('Datos personales') with the customer's saved contact details. Click its continue button (usually 'Continuar'). If this step is not shown, click the continue button of whatever checkout step is visible.",
-    },
   ];
-}
-
-export function chooseShippingSteps(shippingPreference: string): StepTemplate[] {
-  return [
-    {
-      key: "choose-shipping",
-      instruction: `Select the shipping/delivery option matching: ${shippingPreference}. If shipping is already selected and correct, click the continue button instead.`,
-    },
-  ];
-}
-
-export function continueToPaymentSteps(): StepTemplate[] {
-  return [
-    {
-      key: "continue-to-payment",
-      instruction:
-        "Continue to the payment step (button usually labelled 'Continuar')",
-    },
-  ];
-}
-
-/**
- * LLM fallback when the deterministic text-match click can't find the chosen
- * delivery option. Not cached: the label is different every week.
- */
-export function selectDeliveryOptionInstruction(option: string) {
-  return `Select the delivery date/window option labelled "${option}" (click its radio button, card, or calendar day)`;
 }
 
 /** The single final click (D13): executed once, after startConfirming. */
 export const confirmStep: StepTemplate = {
   key: "confirm-purchase",
   instruction:
-    "Click the final purchase confirmation button (usually 'Confirmar compra' or 'Pagar ahora'). Click it exactly once.",
+    "Click the final purchase confirmation button (usually 'Realizar pedido', 'Confirmar compra' or 'Pagar ahora'). Click it exactly once.",
 };

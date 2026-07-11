@@ -784,6 +784,76 @@ export const fail = mutation({
 });
 
 /**
+ * Admin/test helper (CLI only): answer the delivery gate like a human would,
+ * by option index. Used for unattended end-to-end testing.
+ */
+export const adminChooseDelivery = internalMutation({
+  args: { job_id: v.id("purchase_jobs"), option_index: v.number() },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.job_id);
+    if (!job) throw new ConvexError("Job not found");
+    const option = job.delivery_options?.[args.option_index];
+    if (option === undefined) throw new ConvexError("Unknown delivery option");
+    await applyDeliveryChoice(
+      ctx,
+      job,
+      option,
+      "admin-cli",
+      "Delivery date chosen from CLI (test)",
+    );
+    return option;
+  },
+});
+
+/**
+ * Admin/test helper (CLI only): force-expire a job stuck at a human gate so
+ * test runs can be cycled without waiting for the deadline cron. Returns the
+ * cart to approved exactly like the cron would.
+ */
+export const adminExpire = internalMutation({
+  args: { job_id: v.id("purchase_jobs") },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.job_id);
+    if (!job) throw new ConvexError("Job not found");
+    if (job.status === "awaiting_confirm") {
+      await patchJobStatus(
+        ctx,
+        job,
+        "expired",
+        "admin-cli",
+        { lease_expires_at: undefined },
+        "Force-expired from CLI (test)",
+      );
+      await patchCartStatus(
+        ctx,
+        job.cart_id,
+        "approved",
+        "admin-cli",
+        "Cart returned to approved after forced expiry",
+      );
+      return "expired";
+    }
+    if (job.status === "awaiting_delivery_choice") {
+      await patchJobStatus(
+        ctx,
+        job,
+        "queued",
+        "admin-cli",
+        {
+          claimed_by: undefined,
+          lease_expires_at: undefined,
+          delivery_options: undefined,
+          delivery_choice_deadline: undefined,
+        },
+        "Force-requeued from CLI (test)",
+      );
+      return "requeued";
+    }
+    throw new ConvexError(`Job is "${job.status}"; nothing to expire`);
+  },
+});
+
+/**
  * Admin repair (CLI only) for a false completion: a job marked done whose
  * order the store never actually placed (verified by a human against the
  * store's order history). Deletes the phantom ledger row, fails the job, and

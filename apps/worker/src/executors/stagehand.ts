@@ -3,7 +3,6 @@ import type { Id } from "@household/backend/convex/_generated/dataModel";
 import type { BrowserManager, BrowserSession } from "../browser";
 import type { JobDoc, WorkerConvex, WorkContext } from "../convexClient";
 import type { WorkerSecrets } from "../secrets";
-import { actOrThrow } from "../act";
 import { TrajectoryRunner } from "../trajectory";
 import { captureRedactedScreenshot } from "../screenshot";
 import { fillPaymentIfPresent, paymentWarningFor } from "../payment";
@@ -37,6 +36,27 @@ function normalizeForPageMatch(value: string) {
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Shipping rows share a long method prefix ("Envío KAY a domicilio CABA - ");
+ * strip it (on a " - " boundary only) so gate buttons show just the dates.
+ * Row matching is by substring, so the stripped labels still match the rows.
+ */
+function stripCommonPrefix(labels: string[]): string[] {
+  if (labels.length < 2) return labels;
+  let prefix = labels[0]!;
+  for (const label of labels) {
+    let i = 0;
+    while (i < prefix.length && i < label.length && prefix[i] === label[i]) {
+      i += 1;
+    }
+    prefix = prefix.slice(0, i);
+  }
+  const boundary = prefix.lastIndexOf(" - ");
+  if (boundary < 5) return labels;
+  const cut = boundary + 3;
+  return labels.map((label) => label.slice(cut).trim() || label);
 }
 
 function normalizeName(value: string) {
@@ -118,13 +138,24 @@ export class StagehandExecutor implements Executor {
     const { work } = job;
     const session = await this.options.browser.ensureSession(work.store._id);
     try {
-      // Some checkouts ask for card data only at the very end; refresh the
-      // best-effort deterministic fill before the single final click.
-      await fillPaymentIfPresent(
+      // Card values can be cleared by the store during the confirm wait;
+      // refresh the deterministic fill (page + gateway frames) right before
+      // the single final click. Refuse to click with an empty card form.
+      const fill = await fillPaymentIfPresent(
         session.page,
+        session.cdpEndpoint,
         this.options.secrets,
         this.paymentRef(work),
       );
+      if (
+        fill.attempted &&
+        (fill.cardFieldSeen || fill.crossOriginPaymentFrame) &&
+        !fill.filledFields.includes("number")
+      ) {
+        throw new HumanInterventionError(
+          "Card form is empty at confirm time and could not be auto-filled; complete it over noVNC",
+        );
+      }
       const runner = this.runner(session, work.store._id);
       await runner.runFlow("confirm", [tiendanube.confirmStep]);
       // Let the submit round-trip settle before judging the outcome.
@@ -395,18 +426,15 @@ export class StagehandExecutor implements Executor {
     await this.dismissOverlays(session);
     const runner = this.runner(session, work.store._id);
     await runner.runFlow("checkout_start", tiendanube.checkoutStartSteps());
+    // From here to the human confirm gate everything is deterministic —
+    // checkout pages carry the final 'Realizar pedido' button and no LLM
+    // click is allowed anywhere near it (D3/D13).
+    await this.ensureOnReviewPage(session);
     await this.selectSavedAddress(session, work);
-    await runner.runFlow(
-      "choose_shipping",
-      tiendanube.chooseShippingSteps(work.store.shipping_preference),
-    );
     const delivery = await this.resolveDeliveryDate(session, job);
-    await runner.runFlow(
-      "continue_to_payment",
-      tiendanube.continueToPaymentSteps(),
-    );
     const fill = await fillPaymentIfPresent(
       session.page,
+      session.cdpEndpoint,
       this.options.secrets,
       this.paymentRef(work),
     );
@@ -416,6 +444,46 @@ export class StagehandExecutor implements Executor {
       );
     }
     return { fill, delivery };
+  }
+
+  /**
+   * Advance from wherever checkout starts (usually 'Datos personales') to the
+   * review page ('Envío y pago') by clicking only buttons whose exact text is
+   * "Continuar" / "Continuar para el pago" — a pattern that can never match
+   * the final purchase button.
+   */
+  private async ensureOnReviewPage(session: BrowserSession) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const state = await session.page.evaluate(() => {
+        const sections = [...document.querySelectorAll("section, article")];
+        const onReview = sections.some(
+          (s) =>
+            /cambiar/i.test((s as HTMLElement).innerText ?? "") &&
+            /env[ií]o|entrega|retiro/i.test((s as HTMLElement).innerText ?? ""),
+        );
+        if (onReview) return "review";
+        const continueButton = [
+          ...document.querySelectorAll("button, [class*=btn]"),
+        ].find(
+          (el) =>
+            (el as HTMLElement).offsetParent !== null &&
+            /^continuar( para el pago)?$/i.test(
+              (el.textContent ?? "").replace(/\s+/g, " ").trim(),
+            ),
+        );
+        if (continueButton) {
+          (continueButton as HTMLElement).click();
+          return "clicked-continue";
+        }
+        return "waiting";
+      });
+      if (state === "review") return;
+      console.log(`[stagehand] advancing to review page: ${state}`);
+      await session.page.waitForTimeout(2500);
+    }
+    throw new Error(
+      "Could not reach the checkout review page ('Envío y pago')",
+    );
   }
 
   /**
@@ -510,33 +578,6 @@ export class StagehandExecutor implements Executor {
     await session.page.waitForTimeout(1500);
   }
 
-  /**
-   * The date widget loads via AJAX after the shipping step renders; a cached
-   * replay reaches this point much faster than the exploratory first run, so
-   * an immediate extract sees no options (run 2 skipped the gate exactly this
-   * way). Settle, extract, and retry before concluding there is no choice.
-   */
-  private async extractDeliveryOptions(session: BrowserSession) {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await session.page.waitForTimeout(attempt === 0 ? 2000 : 3000);
-      const extracted = await session.stagehand.extract(
-        tiendanube.extractInstructions.deliveryOptions,
-        tiendanube.deliveryOptionsSchema,
-      );
-      const options = extracted.options
-        .map((option) => option.trim())
-        .filter((option) => option.length > 0)
-        .slice(0, MAX_DELIVERY_OPTIONS);
-      if (options.length > 0) {
-        return { options, selected: extracted.selected?.trim() };
-      }
-      console.log(
-        `[stagehand] no delivery options visible yet (attempt ${attempt + 1}/3)`,
-      );
-    }
-    return { options: [] as string[], selected: undefined };
-  }
-
   private deliveryMatches(a: string | undefined, b: string | undefined) {
     if (!a || !b) return false;
     const left = normalizeForPageMatch(a);
@@ -548,26 +589,143 @@ export class StagehandExecutor implements Executor {
     );
   }
 
-  /** Ask the page which option is selected now; the click must have taken. */
-  private async verifyDeliverySelected(
+  /**
+   * Read the option rows of the Tienda Nube shipping panel, opening it first
+   * when it is collapsed behind its "Cambiar" button. DOM ground truth
+   * (inspected live 2026-07-11): rows are `.shipping-options-ship > div`
+   * with an onclick handler; the selected one carries class "active"; names
+   * live in `.shipping-method-item-name`. Retries because the panel content
+   * renders via AJAX after the click.
+   */
+  private async getDeliveryRows(
     session: BrowserSession,
-    chosen: string,
-  ): Promise<boolean> {
-    const check = await session.stagehand.extract(
-      "Which delivery date/window option is currently selected/checked on this checkout step? Also list all offered options.",
-      tiendanube.deliveryOptionsSchema,
-    );
-    return this.deliveryMatches(check.selected, chosen);
+  ): Promise<Array<{ label: string; active: boolean }>> {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const result = await session.page.evaluate(() => {
+        const rows = [...document.querySelectorAll(".shipping-options-ship > div")];
+        if (rows.length > 0) {
+          return rows.map((row) => ({
+            label: (
+              (row.querySelector(".shipping-method-item-name")?.textContent ??
+                row.textContent) ??
+              ""
+            )
+              .replace(/\s+/g, " ")
+              .trim(),
+            active: `${row.className ?? ""}`.includes("active"),
+          }));
+        }
+        for (const section of [...document.querySelectorAll("section")]) {
+          const text = (section as HTMLElement).innerText ?? "";
+          if (!/env[ií]o|entrega|retiro|domicilio/i.test(text)) continue;
+          const button = [...section.querySelectorAll("[class*=btn]")].find(
+            (el) =>
+              (el.textContent ?? "").trim().toLowerCase() === "cambiar" &&
+              (el as HTMLElement).offsetParent !== null,
+          );
+          if (button) {
+            (button as HTMLElement).click();
+            return "opened-panel";
+          }
+        }
+        return "no-panel";
+      });
+      if (Array.isArray(result)) {
+        return result.filter((row) => row.label.length > 0);
+      }
+      console.log(`[stagehand] delivery panel: ${result} (attempt ${attempt + 1}/4)`);
+      await session.page.waitForTimeout(2000);
+    }
+    return [];
   }
 
   /**
-   * The delivery-date gate. Extract the offered dates, park the job as
-   * awaiting_delivery_choice for a human pick (Telegram/dashboard), default
-   * to the earliest option if nobody answers in time, then select the chosen
-   * option on the page and VERIFY the widget registered it (run 1 clicked a
-   * matching but inert element and the store silently kept its default). On
-   * a captcha-resume rerun the stored choice is reused without re-asking.
-   * Returns the choice and a human-facing warning when verification failed.
+   * Click the chosen row, confirm it turns "active", commit with the panel's
+   * "Guardar" button, and verify the collapsed section summary now shows the
+   * choice — the store's own state, not our click, is what gets trusted.
+   */
+  private async commitDeliverySelection(
+    session: BrowserSession,
+    chosen: string,
+  ): Promise<string> {
+    const needle = normalizeForPageMatch(chosen);
+    const clicked = await session.page.evaluate((target: string) => {
+      const rows = [...document.querySelectorAll(".shipping-options-ship > div")];
+      const row = rows.find((r) =>
+        (r.textContent ?? "")
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .includes(target),
+      );
+      if (!row) return "row-not-found";
+      (row as HTMLElement).click();
+      return "clicked";
+    }, needle);
+    if (clicked !== "clicked") return String(clicked);
+    await session.page.waitForTimeout(1200);
+
+    const saved = await session.page.evaluate((target: string) => {
+      const rows = [...document.querySelectorAll(".shipping-options-ship > div")];
+      const row = rows.find((r) =>
+        (r.textContent ?? "")
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .includes(target),
+      );
+      if (!row || !`${row.className ?? ""}`.includes("active")) {
+        return "row-not-active";
+      }
+      const section = row.closest("section") ?? document;
+      const save = [...section.querySelectorAll("[class*=btn]")].find(
+        (el) => (el.textContent ?? "").trim().toLowerCase() === "guardar",
+      );
+      if (!save) return "no-guardar-button";
+      (save as HTMLElement).click();
+      return "saved";
+    }, needle);
+    if (saved !== "saved") return String(saved);
+    await session.page.waitForTimeout(3000);
+
+    return (await this.deliverySummaryShows(session, chosen))
+      ? "ok"
+      : "summary-mismatch";
+  }
+
+  /** The collapsed shipping section's summary line reflects the store state. */
+  private async deliverySummaryShows(
+    session: BrowserSession,
+    chosen: string,
+  ): Promise<boolean> {
+    const needle = normalizeForPageMatch(chosen);
+    const result = await session.page.evaluate((target: string) => {
+      for (const section of [...document.querySelectorAll("section, article")]) {
+        const text = ((section as HTMLElement).innerText ?? "")
+          .normalize("NFD")
+          .replace(/[̀-ͯ]/g, "")
+          .toLowerCase()
+          .replace(/\s+/g, " ");
+        if (/envio|entrega|retiro|domicilio/.test(text) && text.includes(target)) {
+          return true;
+        }
+      }
+      return false;
+    }, needle);
+    return result === true;
+  }
+
+  /**
+   * The delivery-date gate, fully deterministic against the Tienda Nube
+   * checkout: read the panel rows, park the job as awaiting_delivery_choice
+   * for a human pick (Telegram/dashboard), default to the earliest option if
+   * nobody answers in time, then click the row, commit with "Guardar", and
+   * verify the section summary shows the choice (the click alone only
+   * highlights the row — Guardar is what commits; that missing commit is how
+   * runs 1–3 all silently kept the store default). On a captcha-resume rerun
+   * the stored choice is reused without re-asking.
    */
   private async resolveDeliveryDate(
     session: BrowserSession,
@@ -575,15 +733,33 @@ export class StagehandExecutor implements Executor {
   ): Promise<{ chosen?: string; warning?: string }> {
     const freshJob = await this.options.convex.getJob(job.jobId);
     let chosen = freshJob?.chosen_delivery_option;
-    let alreadySelected: string | undefined;
+
+    // Fast path (rerun after captcha/heal): store already shows the choice.
+    if (chosen && (await this.deliverySummaryShows(session, chosen))) {
+      console.log(`[stagehand] delivery already set: ${chosen}`);
+      return { chosen };
+    }
+
+    const rows = await this.getDeliveryRows(session);
+    if (rows.length === 0) {
+      if (chosen) {
+        return {
+          chosen,
+          warning: `Could not find the delivery options panel to select "${chosen}" — check the date on the summary before confirming.`,
+        };
+      }
+      console.log(
+        "[stagehand] no delivery options panel on this checkout; store default stands",
+      );
+      return {};
+    }
+
+    const options = stripCommonPrefix(rows.map((row) => row.label)).slice(
+      0,
+      MAX_DELIVERY_OPTIONS,
+    );
 
     if (!chosen) {
-      const { options, selected } = await this.extractDeliveryOptions(session);
-      alreadySelected = selected;
-      if (options.length === 0) {
-        console.log("[stagehand] no delivery date choice on this checkout");
-        return {};
-      }
       if (options.length === 1) {
         chosen = options[0]!;
       } else {
@@ -617,37 +793,21 @@ export class StagehandExecutor implements Executor {
       }
     }
 
-    if (this.deliveryMatches(alreadySelected, chosen)) {
-      console.log(`[stagehand] delivery option already selected: ${chosen}`);
+    let outcome = await this.commitDeliverySelection(session, chosen);
+    if (outcome !== "ok") {
+      console.log(
+        `[stagehand] delivery selection failed (${outcome}); reopening panel and retrying once`,
+      );
+      await this.getDeliveryRows(session); // reopens the panel if it collapsed
+      outcome = await this.commitDeliverySelection(session, chosen);
+    }
+    if (outcome === "ok") {
+      console.log(`[stagehand] delivery date committed and verified: ${chosen}`);
       return { chosen };
     }
-
-    const outcome = await this.clickByText(session, chosen);
-    console.log(
-      `[stagehand] delivery option click for "${chosen}": ${outcome}`,
-    );
-    await session.page.waitForTimeout(2000);
-    if (await this.verifyDeliverySelected(session, chosen)) {
-      console.log(`[stagehand] verified delivery option: ${chosen}`);
-      return { chosen };
-    }
-
-    console.log(
-      `[stagehand] "${chosen}" not registered after deterministic click; falling back to LLM act`,
-    );
-    await actOrThrow(
-      session.stagehand,
-      tiendanube.selectDeliveryOptionInstruction(chosen),
-    );
-    await session.page.waitForTimeout(2000);
-    if (await this.verifyDeliverySelected(session, chosen)) {
-      console.log(`[stagehand] verified delivery option after heal: ${chosen}`);
-      return { chosen };
-    }
-
     return {
       chosen,
-      warning: `Could not verify that the chosen delivery date ("${chosen}") registered on the store page — check the delivery date on the summary before confirming.`,
+      warning: `Could not verify that the chosen delivery date ("${chosen}") registered on the store page (${outcome}) — check the delivery date on the summary before confirming.`,
     };
   }
 
