@@ -136,6 +136,28 @@ function asFillOutcome(value: unknown): FillOutcome {
   return { filled: [], seen: false };
 }
 
+/**
+ * On a fresh checkout session the payment methods render as a collapsed
+ * accordion and the card inputs do not exist until "Tarjeta de crédito o
+ * débito" is clicked (verified live 2026-07-12: only hidden method radios
+ * were present, and clicking the label made payment.creditCard.* appear).
+ * Returns "present" | "expanded" | "absent".
+ */
+const EXPAND_CARD_EXPRESSION = `(() => {
+  if (document.querySelector("input[name*='cardNumber' i], input[autocomplete='cc-number']")) {
+    return "present";
+  }
+  const candidates = [];
+  for (const el of document.querySelectorAll("label, [class*=option], [class*=method], [class*=panel], h4, h5, div, span")) {
+    if (el.offsetParent === null) continue;
+    const text = (el.textContent || "").replace(/\\s+/g, " ").trim();
+    if (/^tarjeta de cr(e|\\u00e9)dito o d(e|\\u00e9)bito$/i.test(text)) candidates.push(el);
+  }
+  if (candidates.length === 0) return "absent";
+  candidates[candidates.length - 1].click();
+  return "expanded";
+})()`;
+
 export async function fillPaymentIfPresent(
   page: StagehandPage,
   cdpEndpoint: string,
@@ -167,6 +189,22 @@ export async function fillPaymentIfPresent(
       );
       crossOriginPaymentFrame = frames.length > 0;
       for (const frame of frames) {
+        // Expand the "Tarjeta de crédito o débito" accordion first when the
+        // card inputs are not rendered yet, and give them time to appear.
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const cardState = String(
+            await evaluateInCdpTarget(
+              frame.webSocketDebuggerUrl!,
+              EXPAND_CARD_EXPRESSION,
+            ),
+          );
+          if (cardState === "present") break;
+          if (cardState === "absent" && attempt > 0) break;
+          console.log(
+            `[payment] card section in ${new URL(frame.url).hostname}: ${cardState} (attempt ${attempt + 1}/3)`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+        }
         const outcome = asFillOutcome(
           await evaluateInCdpTarget(frame.webSocketDebuggerUrl!, expression),
         );
