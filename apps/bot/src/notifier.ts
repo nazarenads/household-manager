@@ -35,6 +35,7 @@ export function startNotifier(
   let jobsSeeded = false;
   let cartsSeeded = false;
   const actionStatuses = new Set([
+    "awaiting_delivery_choice",
     "awaiting_confirm",
     "paused_captcha",
     "needs_reconciliation",
@@ -96,18 +97,54 @@ export function startNotifier(
       let replyMarkup:
         { reply_markup: { inline_keyboard: any[][] } } | undefined;
 
-      if (currentStatus === "awaiting_confirm") {
+      if (currentStatus === "awaiting_delivery_choice") {
+        const options = job.delivery_options ?? [];
+        const deadline = job.delivery_choice_deadline
+          ? `\nAuto-picks the earliest if nobody answers by ${new Date(
+              job.delivery_choice_deadline,
+            ).toLocaleString()}`
+          : "";
+        message = `📅 ${storeName}\nPick a delivery date:${deadline}`;
+
+        const keyboard = new InlineKeyboard();
+        options.forEach((option, index) => {
+          keyboard
+            .text(
+              index === 0 ? `${option} (earliest)` : option,
+              `job:date:${job._id}:${index}`,
+            )
+            .row();
+        });
+
+        for (const chatId of allChatIds) {
+          try {
+            await bot.api.sendMessage(chatId, message, {
+              reply_markup: keyboard,
+            });
+          } catch (err) {
+            console.error(
+              `Failed to send delivery-choice notification to ${chatId}:`,
+              err,
+            );
+          }
+        }
+      } else if (currentStatus === "awaiting_confirm") {
         const total =
           job.order_summary_total !== undefined
             ? `\nTotal: ${formatStockDelta(job.order_summary_total)} ${
                 job.order_summary_currency ?? "ARS"
               }`
             : "";
+        const delivery = job.summary_delivery_window
+          ? `\nDelivery: ${job.summary_delivery_window}`
+          : job.chosen_delivery_option
+            ? `\nDelivery: ${job.chosen_delivery_option}`
+            : "";
         const deadline = job.confirm_deadline
           ? `\nConfirm by: ${new Date(job.confirm_deadline).toLocaleString()}`
           : "";
 
-        message = `${storeName}\nOrder ready to confirm${total}${deadline}`;
+        message = `${storeName}\nOrder ready to confirm${total}${delivery}${deadline}`;
 
         if (
           job.summary_diff &&

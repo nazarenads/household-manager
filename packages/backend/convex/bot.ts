@@ -427,6 +427,7 @@ export const jobs = query({
       v.union(
         v.literal("queued"),
         v.literal("running"),
+        v.literal("awaiting_delivery_choice"),
         v.literal("awaiting_confirm"),
         v.literal("confirmed"),
         v.literal("confirming"),
@@ -466,6 +467,9 @@ export const jobs = query({
           summary_line_items: job.summary_line_items,
           summary_shipping_total: job.summary_shipping_total,
           summary_delivery_window: job.summary_delivery_window,
+          delivery_options: job.delivery_options,
+          chosen_delivery_option: job.chosen_delivery_option,
+          delivery_choice_deadline: job.delivery_choice_deadline,
           summary_diff: job.summary_diff as
             | { withinPolicy: boolean; issues: Array<Record<string, unknown>> }
             | undefined,
@@ -510,6 +514,43 @@ export const parseText = action({
       ].join("\n"),
     });
     return result.object;
+  },
+});
+
+/** Human picks a delivery date from Telegram (by option index, callback-data safe). */
+export const chooseDelivery = mutation({
+  args: {
+    botToken: v.string(),
+    jobId: v.id("purchase_jobs"),
+    optionIndex: v.number(),
+    sourceUser: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    requireBotToken(args);
+    const actor = args.sourceUser ?? "telegram";
+    const job = await ctx.db.get(args.jobId);
+    if (!job) throw new ConvexError("Job not found");
+    if (job.status !== "awaiting_delivery_choice") {
+      throw new ConvexError("Job is not awaiting a delivery choice");
+    }
+    const option = job.delivery_options?.[args.optionIndex];
+    if (option === undefined) {
+      throw new ConvexError("Unknown delivery option");
+    }
+    await patchJobStatus(
+      ctx,
+      job,
+      "running",
+      actor,
+      {
+        chosen_delivery_option: option,
+        delivery_chosen_by: actor,
+        delivery_choice_deadline: undefined,
+        lease_expires_at: Date.now() + 10 * 60 * 1000,
+      },
+      "Delivery date chosen from Telegram",
+    );
+    return option;
   },
 });
 

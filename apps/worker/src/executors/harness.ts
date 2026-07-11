@@ -85,6 +85,12 @@ export class HarnessExecutor implements Executor {
       lines,
       "",
       `Shipping preference: ${work.store.shipping_preference}`,
+      ...(work.store.delivery_address
+        ? [
+            `Delivery address: if the checkout offers saved addresses, select the one matching "${work.store.delivery_address}". Never create or edit an address.`,
+          ]
+        : []),
+      "Delivery date: if the checkout offers delivery dates or time windows, select the EARLIEST available one.",
       "",
       "Steps: add each product to the cart (prefer the product page links above; otherwise use the store search), then proceed through checkout until the order summary page that shows the line items and the total.",
       "STOP at the order summary. Do NOT click any final purchase/confirm button ('Confirmar compra', 'Pagar ahora' or similar).",

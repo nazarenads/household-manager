@@ -209,6 +209,113 @@ describe("confirm handshake", () => {
   });
 });
 
+describe("delivery-date gate", () => {
+  const OPTIONS = ["Lunes 13/07", "Martes 14/07", "Miércoles 15/07"];
+
+  test("human choice: options published, Telegram pick resumes the job", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seed(t);
+    const jobId = await queueAndClaim(t, seeded);
+
+    await t.mutation(api.jobs.awaitDeliveryChoice, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+      delivery_options: OPTIONS,
+    });
+    const awaiting = await t.run((ctx) => ctx.db.get(jobId));
+    expect(awaiting?.status).toBe("awaiting_delivery_choice");
+    expect(awaiting?.delivery_options).toEqual(OPTIONS);
+    expect(awaiting?.delivery_choice_deadline).toBeGreaterThan(Date.now());
+
+    const chosen = await t.mutation(api.bot.chooseDelivery, {
+      botToken: WORKER_TOKEN,
+      jobId,
+      optionIndex: 1,
+      sourceUser: "naza",
+    });
+    expect(chosen).toBe("Martes 14/07");
+    const resumed = await t.run((ctx) => ctx.db.get(jobId));
+    expect(resumed?.status).toBe("running");
+    expect(resumed?.chosen_delivery_option).toBe("Martes 14/07");
+    expect(resumed?.delivery_chosen_by).toBe("naza");
+    expect(resumed?.lease_expires_at).toBeGreaterThan(Date.now());
+  });
+
+  test("worker fallback resumes with the earliest; no-op if a human already chose", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seed(t);
+    const jobId = await queueAndClaim(t, seeded);
+    await t.mutation(api.jobs.awaitDeliveryChoice, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+      delivery_options: OPTIONS,
+    });
+
+    await t.mutation(api.jobs.resumeDeliveryDefault, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+      option: OPTIONS[0]!,
+    });
+    const resumed = await t.run((ctx) => ctx.db.get(jobId));
+    expect(resumed?.status).toBe("running");
+    expect(resumed?.chosen_delivery_option).toBe(OPTIONS[0]);
+    expect(resumed?.delivery_chosen_by).toBe(WORKER_ID);
+
+    // A late fallback against an already-resumed job must not throw or clobber.
+    await t.mutation(api.jobs.resumeDeliveryDefault, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+      option: OPTIONS[2]!,
+    });
+    const after = await t.run((ctx) => ctx.db.get(jobId));
+    expect(after?.chosen_delivery_option).toBe(OPTIONS[0]);
+  });
+
+  test("rejects an option that was never offered", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seed(t);
+    const jobId = await queueAndClaim(t, seeded);
+    await t.mutation(api.jobs.awaitDeliveryChoice, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+      delivery_options: OPTIONS,
+    });
+    await expect(
+      t.mutation(api.bot.chooseDelivery, {
+        botToken: WORKER_TOKEN,
+        jobId,
+        optionIndex: 99,
+      }),
+    ).rejects.toThrow(/Unknown delivery option/);
+  });
+
+  test("expireStale requeues a gate abandoned past its deadline", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seed(t);
+    const jobId = await queueAndClaim(t, seeded);
+    await t.mutation(api.jobs.awaitDeliveryChoice, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+      delivery_options: OPTIONS,
+    });
+    await t.run((ctx) =>
+      ctx.db.patch(jobId, { delivery_choice_deadline: Date.now() - 1000 }),
+    );
+
+    await t.mutation(internal.jobs.expireStale, {});
+    const job = await t.run((ctx) => ctx.db.get(jobId));
+    expect(job?.status).toBe("queued");
+    expect(job?.claimed_by).toBeUndefined();
+    expect(job?.delivery_options).toBeUndefined();
+  });
+});
+
 describe("expireStale cron", () => {
   test("requeues a running job whose lease lapsed", async () => {
     const t = convexTest(schema, modules);

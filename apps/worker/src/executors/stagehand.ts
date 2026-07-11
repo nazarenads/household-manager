@@ -1,8 +1,9 @@
 import type { ReceiptResult, SummaryResult } from "@household/shared";
 import type { Id } from "@household/backend/convex/_generated/dataModel";
 import type { BrowserManager, BrowserSession } from "../browser";
-import type { WorkerConvex, WorkContext } from "../convexClient";
+import type { JobDoc, WorkerConvex, WorkContext } from "../convexClient";
 import type { WorkerSecrets } from "../secrets";
+import { actOrThrow } from "../act";
 import { TrajectoryRunner } from "../trajectory";
 import { captureRedactedScreenshot } from "../screenshot";
 import { fillPaymentIfPresent } from "../payment";
@@ -21,6 +22,22 @@ export type StagehandExecutorOptions = {
   secrets: WorkerSecrets;
   screenshotDir: string;
 };
+
+// How long the worker holds the browser at the delivery-date gate before
+// defaulting to the earliest option. The server-side deadline (30 min, cron
+// requeue) is the dead-worker backstop, so this must stay well under it.
+const DELIVERY_CHOICE_WAIT_MS = 15 * 60 * 1000;
+const MAX_DELIVERY_OPTIONS = 8;
+
+/** Accent-stripped, whitespace-collapsed lowercase for page-text matching. */
+function normalizeForPageMatch(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function normalizeName(value: string) {
   return value
@@ -66,7 +83,7 @@ export class StagehandExecutor implements Executor {
       await this.assertLoggedIn(session, work);
       await this.buildCart(session, work);
       await this.reconcileCartQuantities(session, work);
-      await this.checkoutToSummary(session, work);
+      await this.checkoutToSummary(session, job);
       const summary = await this.extractSummary(session, work);
       console.log(
         `[stagehand] summary reached for job ${job.jobId}; LLM tokens this run: ${
@@ -343,13 +360,24 @@ export class StagehandExecutor implements Executor {
     );
   }
 
-  private async checkoutToSummary(session: BrowserSession, work: WorkContext) {
+  private async checkoutToSummary(
+    session: BrowserSession,
+    job: PurchaseJobCtx,
+  ) {
+    const { work } = job;
     await session.page.goto(tiendanube.cartUrl(work.store.domain));
     await this.dismissOverlays(session);
     const runner = this.runner(session, work.store._id);
+    await runner.runFlow("checkout_start", tiendanube.checkoutStartSteps());
+    await this.selectSavedAddress(session, work);
     await runner.runFlow(
-      "checkout_to_summary",
-      tiendanube.checkoutToSummarySteps(work.store.shipping_preference),
+      "choose_shipping",
+      tiendanube.chooseShippingSteps(work.store.shipping_preference),
+    );
+    await this.resolveDeliveryDate(session, job);
+    await runner.runFlow(
+      "continue_to_payment",
+      tiendanube.continueToPaymentSteps(),
     );
     const fill = await fillPaymentIfPresent(
       session.page,
@@ -361,6 +389,165 @@ export class StagehandExecutor implements Executor {
         `[stagehand] deterministic payment fill: ${fill.filledFields.join(", ")}`,
       );
     }
+  }
+
+  /**
+   * Click the element whose surrounding text matches `needle` — first radios
+   * (climbing to the text-bearing ancestor, same trick as the cart rows),
+   * then clickable elements carrying the text themselves. Deterministic and
+   * free; returns how it matched, or "not-found".
+   */
+  private async clickByText(
+    session: BrowserSession,
+    needle: string,
+  ): Promise<string> {
+    const result = await session.page.evaluate(
+      (target: string) => {
+        for (const radio of [
+          ...document.querySelectorAll("input[type=radio]"),
+        ]) {
+          let node = (radio as HTMLElement).parentElement;
+          for (let depth = 0; depth < 5 && node; depth += 1) {
+            const text = (node.textContent ?? "")
+              .normalize("NFD")
+              .replace(/[̀-ͯ]/g, "")
+              .toLowerCase()
+              .replace(/\s+/g, " ")
+              .trim();
+            if (text.length < 600 && text.includes(target)) {
+              (radio as HTMLElement).click();
+              return "radio";
+            }
+            node = node.parentElement;
+          }
+        }
+        for (const el of [
+          ...document.querySelectorAll("label, button, a, [role=button]"),
+        ]) {
+          const text = (el.textContent ?? "")
+            .normalize("NFD")
+            .replace(/[̀-ͯ]/g, "")
+            .toLowerCase()
+            .replace(/\s+/g, " ")
+            .trim();
+          if (
+            text.length < 300 &&
+            text.includes(target) &&
+            (el as HTMLElement).offsetParent !== null
+          ) {
+            (el as HTMLElement).click();
+            return "element";
+          }
+        }
+        return "not-found";
+      },
+      normalizeForPageMatch(needle),
+    );
+    return typeof result === "string" ? result : "not-found";
+  }
+
+  /**
+   * Select the household's saved checkout address by text match. Silent no-op
+   * when the store has no configured address or the page shows no address
+   * list (single-address accounts auto-select); the confirm-gate screenshot
+   * remains the human check that the right address is on the order.
+   */
+  private async selectSavedAddress(session: BrowserSession, work: WorkContext) {
+    const address = work.store.delivery_address;
+    if (!address) return;
+    const outcome = await this.clickByText(session, address);
+    if (outcome === "not-found") {
+      console.log(
+        `[stagehand] saved address "${address}" not found on this step (single-address account or already selected); continuing`,
+      );
+      return;
+    }
+    console.log(`[stagehand] selected saved address via ${outcome}`);
+    await session.page.waitForTimeout(1500);
+  }
+
+  /**
+   * The delivery-date gate. Extract the offered dates, park the job as
+   * awaiting_delivery_choice for a human pick (Telegram/dashboard), default
+   * to the earliest option if nobody answers in time, then select the chosen
+   * option on the page. On a captcha-resume rerun the stored choice is reused
+   * without re-asking.
+   */
+  private async resolveDeliveryDate(
+    session: BrowserSession,
+    job: PurchaseJobCtx,
+  ) {
+    const { work } = job;
+    const freshJob = await this.options.convex.getJob(job.jobId);
+    let chosen = freshJob?.chosen_delivery_option;
+
+    if (!chosen) {
+      const extracted = await session.stagehand.extract(
+        tiendanube.extractInstructions.deliveryOptions,
+        tiendanube.deliveryOptionsSchema,
+      );
+      const options = extracted.options
+        .map((option) => option.trim())
+        .filter((option) => option.length > 0)
+        .slice(0, MAX_DELIVERY_OPTIONS);
+      if (options.length === 0) {
+        console.log("[stagehand] no delivery date choice on this checkout");
+        return;
+      }
+      if (options.length === 1) {
+        chosen = options[0]!;
+      } else {
+        console.log(
+          `[stagehand] delivery options: ${options.join(" | ")}; awaiting human choice`,
+        );
+        await this.options.convex.awaitDeliveryChoice(job.jobId, options);
+        let decision: JobDoc | null = null;
+        try {
+          decision = await this.options.convex.waitForJob(
+            job.jobId,
+            (doc) => doc === null || doc.status !== "awaiting_delivery_choice",
+            DELIVERY_CHOICE_WAIT_MS,
+          );
+        } catch {
+          // Nobody answered inside the worker's window; default to earliest.
+        }
+        if (!decision || decision.status === "awaiting_delivery_choice") {
+          await this.options.convex.resumeDeliveryDefault(
+            job.jobId,
+            options[0]!,
+          );
+          decision = await this.options.convex.getJob(job.jobId);
+        }
+        if (decision?.status !== "running" || !decision.chosen_delivery_option) {
+          throw new Error(
+            `Job left the delivery gate as "${decision?.status ?? "missing"}"; aborting this run`,
+          );
+        }
+        chosen = decision.chosen_delivery_option;
+      }
+      if (extracted.selected && chosen === extracted.selected.trim()) {
+        console.log(
+          `[stagehand] delivery option already selected: ${chosen}`,
+        );
+        return;
+      }
+    }
+
+    const outcome = await this.clickByText(session, chosen);
+    if (outcome === "not-found") {
+      console.log(
+        `[stagehand] deterministic click missed "${chosen}"; falling back to LLM act`,
+      );
+      await actOrThrow(
+        session.stagehand,
+        tiendanube.selectDeliveryOptionInstruction(chosen),
+      );
+    } else {
+      console.log(
+        `[stagehand] selected delivery option "${chosen}" via ${outcome}`,
+      );
+    }
+    await session.page.waitForTimeout(1500);
   }
 
   private async extractSummary(

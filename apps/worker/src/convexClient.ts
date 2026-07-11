@@ -104,6 +104,13 @@ export class WorkerConvex {
     );
   }
 
+  async getJob(jobId: Id<"purchase_jobs">): Promise<JobDoc | null> {
+    return await this.client.query(api.jobs.getForWorker, {
+      workerToken: this.workerToken,
+      job_id: jobId,
+    });
+  }
+
   onJob(
     jobId: Id<"purchase_jobs">,
     callback: (job: JobDoc | null) => void,
@@ -165,6 +172,23 @@ export class WorkerConvex {
 
   async renewLease(jobId: Id<"purchase_jobs">) {
     await this.client.mutation(api.jobs.renewLease, this.ids(jobId));
+  }
+
+  async awaitDeliveryChoice(
+    jobId: Id<"purchase_jobs">,
+    deliveryOptions: string[],
+  ) {
+    await this.client.mutation(api.jobs.awaitDeliveryChoice, {
+      ...this.ids(jobId),
+      delivery_options: deliveryOptions,
+    });
+  }
+
+  async resumeDeliveryDefault(jobId: Id<"purchase_jobs">, option: string) {
+    await this.client.mutation(api.jobs.resumeDeliveryDefault, {
+      ...this.ids(jobId),
+      option,
+    });
   }
 
   async reachedSummary(jobId: Id<"purchase_jobs">, payload: SummaryPayload) {

@@ -77,6 +77,9 @@ type Job = {
   }>;
   summary_shipping_total?: number;
   summary_delivery_window?: string;
+  delivery_options?: string[];
+  chosen_delivery_option?: string;
+  delivery_choice_deadline?: number;
   summary_diff?: {
     withinPolicy: boolean;
     issues: Array<{
@@ -205,6 +208,7 @@ function DashboardApp() {
   const cancelCart = useMutation(api.carts.cancel);
   const queueCart = useMutation(api.carts.queueApproved);
   const confirmJob = useMutation(api.jobs.confirm);
+  const chooseDelivery = useMutation(api.jobs.chooseDelivery);
   const resumeJob = useMutation(api.jobs.resume);
   const markLedgerReceived = useMutation(api.ledger.markReceived);
   const setExecutorConfig = useMutation(api.config.setExecutorConfig);
@@ -878,6 +882,35 @@ function DashboardApp() {
                         : ""}
                       {job.error ? ` · ${job.error}` : ""}
                     </div>
+                    {job.status === "awaiting_delivery_choice" ? (
+                      <div className="summary-lines">
+                        <div>Pick a delivery date (earliest first):</div>
+                        {(job.delivery_options ?? []).map((option, idx) => (
+                          <button
+                            key={idx}
+                            className="text-btn"
+                            type="button"
+                            disabled={pending !== null}
+                            onClick={() =>
+                              run("Delivery date set", () =>
+                                chooseDelivery({
+                                  job_id: job._id,
+                                  option,
+                                }),
+                              )
+                            }
+                          >
+                            {idx === 0 ? `${option} (earliest)` : option}
+                          </button>
+                        ))}
+                        {job.delivery_choice_deadline ? (
+                          <div className="row-note">
+                            Auto-picks the earliest by{" "}
+                            {formatDate(job.delivery_choice_deadline)}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {job.status === "awaiting_confirm" ? (
                       <>
                         {job.order_summary_screenshot_url ? (

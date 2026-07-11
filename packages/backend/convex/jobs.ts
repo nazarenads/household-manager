@@ -10,6 +10,7 @@ import {
 } from "./lib/state";
 
 const DEFAULT_LEASE_MS = 10 * 60 * 1000;
+const DELIVERY_CHOICE_TIMEOUT_MS = 30 * 60 * 1000;
 const SCREENSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 const CONFIRMING_RECONCILIATION_MS = 15 * 60 * 1000;
 const PRICE_DRIFT_TOLERANCE = 0.15;
@@ -263,6 +264,7 @@ export const getWorkContext = query({
         proxy_ref: store.proxy_ref,
         proxy_policy: store.proxy_policy,
         shipping_preference: store.shipping_preference,
+        delivery_address: store.delivery_address,
       },
     };
   },
@@ -354,6 +356,121 @@ export const renewLease = mutation({
       lease_expires_at: Date.now() + DEFAULT_LEASE_MS,
       updated_at: Date.now(),
     });
+  },
+});
+
+/**
+ * Worker found more than one delivery date at the shipping step: publish the
+ * options (in the order the store displays them — earliest first) and park
+ * the job until a human picks one or the worker's auto-earliest fallback
+ * fires. Nothing is purchased from this state; the confirm gate still follows.
+ */
+export const awaitDeliveryChoice = mutation({
+  args: {
+    workerToken: v.string(),
+    job_id: v.id("purchase_jobs"),
+    worker_id: v.string(),
+    delivery_options: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    requireWorkerToken(args);
+    const job = await ctx.db.get(args.job_id);
+    if (!job) throw new ConvexError("Job not found");
+    if (job.status !== "running" || job.claimed_by !== args.worker_id) {
+      throw new ConvexError("Worker does not hold this running job");
+    }
+    if (args.delivery_options.length === 0) {
+      throw new ConvexError("Delivery options must not be empty");
+    }
+    await patchJobStatus(
+      ctx,
+      job,
+      "awaiting_delivery_choice",
+      args.worker_id,
+      {
+        delivery_options: args.delivery_options,
+        chosen_delivery_option: undefined,
+        delivery_chosen_by: undefined,
+        delivery_choice_deadline: Date.now() + DELIVERY_CHOICE_TIMEOUT_MS,
+        lease_expires_at: undefined,
+      },
+      "Waiting for a delivery date choice",
+    );
+  },
+});
+
+async function applyDeliveryChoice(
+  ctx: MutationCtx,
+  job: Doc<"purchase_jobs">,
+  option: string,
+  actor: string,
+  note: string,
+) {
+  if (job.status !== "awaiting_delivery_choice") {
+    throw new ConvexError("Job is not awaiting a delivery choice");
+  }
+  if (!job.delivery_options?.includes(option)) {
+    throw new ConvexError("Unknown delivery option");
+  }
+  await patchJobStatus(
+    ctx,
+    job,
+    "running",
+    actor,
+    {
+      chosen_delivery_option: option,
+      delivery_chosen_by: actor,
+      delivery_choice_deadline: undefined,
+      lease_expires_at: Date.now() + DEFAULT_LEASE_MS,
+    },
+    note,
+  );
+}
+
+/** Human picks a delivery date from the dashboard. */
+export const chooseDelivery = mutation({
+  args: { job_id: v.id("purchase_jobs"), option: v.string() },
+  handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+    const job = await ctx.db.get(args.job_id);
+    if (!job) throw new ConvexError("Job not found");
+    await applyDeliveryChoice(
+      ctx,
+      job,
+      args.option,
+      actor,
+      "Delivery date chosen from dashboard",
+    );
+  },
+});
+
+/**
+ * Worker fallback: nobody answered within the worker's wait window, so it
+ * resumes with the earliest option. Safe because the awaiting_confirm human
+ * gate still stands between this and any purchase.
+ */
+export const resumeDeliveryDefault = mutation({
+  args: {
+    workerToken: v.string(),
+    job_id: v.id("purchase_jobs"),
+    worker_id: v.string(),
+    option: v.string(),
+  },
+  handler: async (ctx, args) => {
+    requireWorkerToken(args);
+    const job = await ctx.db.get(args.job_id);
+    if (!job) throw new ConvexError("Job not found");
+    if (job.claimed_by !== args.worker_id) {
+      throw new ConvexError("Worker does not hold this job");
+    }
+    if (job.status !== "awaiting_delivery_choice") return; // human beat us to it
+    await applyDeliveryChoice(
+      ctx,
+      job,
+      args.option,
+      args.worker_id,
+      "No answer in time; defaulted to the earliest delivery date",
+    );
   },
 });
 
@@ -702,6 +819,33 @@ export const expireStale = internalMutation({
           "approved",
           "cron",
           "Cart returned to approved after expiry",
+        );
+      }
+    }
+
+    // A live worker auto-picks the earliest date well before this deadline;
+    // reaching it means the worker died mid-gate — requeue for a fresh run.
+    const awaitingDelivery = await ctx.db
+      .query("purchase_jobs")
+      .withIndex("by_status", (q) => q.eq("status", "awaiting_delivery_choice"))
+      .collect();
+    for (const job of awaitingDelivery) {
+      if (
+        job.delivery_choice_deadline &&
+        job.delivery_choice_deadline <= now
+      ) {
+        await patchJobStatus(
+          ctx,
+          job,
+          "queued",
+          "cron",
+          {
+            claimed_by: undefined,
+            lease_expires_at: undefined,
+            delivery_options: undefined,
+            delivery_choice_deadline: undefined,
+          },
+          "Delivery choice deadline expired with no worker fallback",
         );
       }
     }

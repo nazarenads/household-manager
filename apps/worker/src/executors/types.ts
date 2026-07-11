@@ -1,8 +1,9 @@
 import type { ReceiptResult, SummaryResult } from "@household/shared";
+import type { Id } from "@household/backend/convex/_generated/dataModel";
 import type { WorkContext } from "../convexClient";
 
 export type PurchaseJobCtx = {
-  jobId: string;
+  jobId: Id<"purchase_jobs">;
   work: WorkContext;
 };
 

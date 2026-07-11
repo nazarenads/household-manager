@@ -8,6 +8,7 @@ export const updateByLoginRef = internalMutation({
   args: {
     loginRef: v.string(),
     domain: v.optional(v.string()),
+    deliveryAddress: v.optional(v.string()),
     executorOverride: v.optional(
       v.union(v.literal("stagehand"), v.literal("harness")),
     ),
@@ -21,6 +22,9 @@ export const updateByLoginRef = internalMutation({
     if (!store) throw new Error(`No store with login_ref "${args.loginRef}"`);
     await ctx.db.patch(store._id, {
       ...(args.domain !== undefined ? { domain: args.domain } : {}),
+      ...(args.deliveryAddress !== undefined
+        ? { delivery_address: args.deliveryAddress }
+        : {}),
       ...(args.executorOverride !== undefined
         ? { executor_override: args.executorOverride }
         : {}),
@@ -84,6 +88,7 @@ export const upsert = mutation({
       v.literal("required"),
     ),
     shipping_preference: v.string(),
+    delivery_address: v.optional(v.string()),
     executor_override: v.optional(
       v.union(v.literal("stagehand"), v.literal("harness")),
     ),

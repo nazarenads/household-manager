@@ -33,6 +33,8 @@ export default defineSchema({
       v.literal("required"),
     ),
     shipping_preference: v.string(),
+    // Saved checkout address to select (matched by text, e.g. street + number).
+    delivery_address: v.optional(v.string()),
     executor_override: v.optional(
       v.union(v.literal("stagehand"), v.literal("harness")),
     ),
@@ -112,6 +114,7 @@ export default defineSchema({
     status: v.union(
       v.literal("queued"),
       v.literal("running"),
+      v.literal("awaiting_delivery_choice"),
       v.literal("awaiting_confirm"),
       v.literal("confirmed"),
       v.literal("confirming"),
@@ -123,6 +126,12 @@ export default defineSchema({
       v.literal("needs_reconciliation"),
     ),
     executor: v.union(v.literal("stagehand"), v.literal("harness")),
+    // Delivery-date gate: options extracted at the shipping step, chosen by a
+    // human (bot/dashboard) or auto-earliest on timeout.
+    delivery_options: v.optional(v.array(v.string())),
+    chosen_delivery_option: v.optional(v.string()),
+    delivery_choice_deadline: v.optional(v.number()),
+    delivery_chosen_by: v.optional(v.string()),
     claimed_by: v.optional(v.string()),
     lease_expires_at: v.optional(v.number()),
     order_summary_screenshot: v.optional(v.id("_storage")),

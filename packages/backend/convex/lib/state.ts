@@ -12,6 +12,7 @@ export type CartStatus =
 export type PurchaseJobStatus =
   | "queued"
   | "running"
+  | "awaiting_delivery_choice"
   | "awaiting_confirm"
   | "confirmed"
   | "confirming"
@@ -38,12 +39,16 @@ const allowedJobTransitions: Record<
 > = {
   queued: ["running", "failed"],
   running: [
+    "awaiting_delivery_choice",
     "awaiting_confirm",
     "paused_captcha",
     "paused_limit",
     "failed",
     "queued",
   ],
+  // Back to running on a human choice or the worker's auto-earliest fallback;
+  // back to queued when the expiry cron reclaims a dead worker's job.
+  awaiting_delivery_choice: ["running", "queued", "failed"],
   awaiting_confirm: ["confirmed", "expired", "failed"],
   confirmed: ["confirming", "failed"],
   confirming: ["done", "needs_reconciliation"],

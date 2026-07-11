@@ -520,6 +520,26 @@ bot.callbackQuery(/^cart:queue:(.+)$/, async (ctx) => {
   }
 });
 
+bot.callbackQuery(/^job:date:([^:]+):(\d+)$/, async (ctx) => {
+  try {
+    const jobId = ctx.match[1] as Id<"purchase_jobs">;
+    const optionIndex = Number(ctx.match[2]);
+    const option = await convex.mutation(api.bot.chooseDelivery, {
+      botToken,
+      jobId,
+      optionIndex,
+      sourceUser: actorFor(ctx),
+    });
+    await ctx.answerCallbackQuery("Delivery date set");
+    await ctx.reply(
+      `Delivery date set: ${option}. The worker is continuing to the order summary.`,
+    );
+  } catch (error) {
+    await ctx.answerCallbackQuery("Choice failed");
+    await replyError(ctx, error);
+  }
+});
+
 bot.callbackQuery(/^job:confirm:(.+)$/, async (ctx) => {
   try {
     const jobId = ctx.match[1] as Id<"purchase_jobs">;
