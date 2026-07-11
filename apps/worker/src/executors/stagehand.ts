@@ -567,6 +567,7 @@ export class StagehandExecutor implements Executor {
    * the final purchase button.
    */
   private async ensureOnReviewPage(session: BrowserSession) {
+    let lastDiag = "";
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const state = await session.page.evaluate(() => {
         const sections = [...document.querySelectorAll("section, article")];
@@ -575,7 +576,21 @@ export class StagehandExecutor implements Executor {
             /cambiar/i.test((s as HTMLElement).innerText ?? "") &&
             /env[ií]o|entrega|retiro/i.test((s as HTMLElement).innerText ?? ""),
         );
-        if (onReview) return "review";
+        if (onReview) return { state: "review", diag: "" };
+        const errors = [];
+        for (const el of document.querySelectorAll<HTMLElement>(
+          "[class*=error], [class*=alert-danger], [role=alert], [class*=has-error]",
+        )) {
+          if (el.offsetParent === null) continue;
+          const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+          if (text.length > 3) errors.push(text.slice(0, 100));
+        }
+        const heading = (
+          document.querySelector("h1, h2, h3, legend")?.textContent ?? ""
+        )
+          .replace(/\s+/g, " ")
+          .trim();
+        const diag = `url=${location.pathname.slice(0, 60)} heading="${heading.slice(0, 60)}" errors=${JSON.stringify(errors.slice(0, 3))}`;
         const continueButton = [
           ...document.querySelectorAll("button, [class*=btn]"),
         ].find(
@@ -587,16 +602,20 @@ export class StagehandExecutor implements Executor {
         );
         if (continueButton) {
           (continueButton as HTMLElement).click();
-          return "clicked-continue";
+          return { state: "clicked-continue", diag };
         }
-        return "waiting";
+        return { state: "waiting", diag };
       });
-      if (state === "review") return;
-      console.log(`[stagehand] advancing to review page: ${state}`);
+      const result = state as { state: string; diag: string };
+      if (result.state === "review") return;
+      lastDiag = result.diag;
+      console.log(
+        `[stagehand] advancing to review page: ${result.state} | ${result.diag}`,
+      );
       await session.page.waitForTimeout(2500);
     }
     throw new Error(
-      "Could not reach the checkout review page ('Envío y pago')",
+      `Could not reach the checkout review page ('Envío y pago'); last state: ${lastDiag}`,
     );
   }
 
