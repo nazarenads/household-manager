@@ -873,6 +873,70 @@ export const adminExpire = internalMutation({
 });
 
 /**
+ * Admin repair (CLI only) for the inverse failure: the store DID place the
+ * order (human verified: success page / charge / store order history) but the
+ * worker misjudged the outcome. Marks the job done with the real order data
+ * and writes the ledger row the completion path would have written.
+ */
+export const adminMarkPlaced = internalMutation({
+  args: {
+    job_id: v.id("purchase_jobs"),
+    order_ref: v.string(),
+    total: v.number(),
+    line_items: v.array(
+      v.object({ name: v.string(), qty: v.number(), price: v.number() }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.job_id);
+    if (!job) throw new ConvexError("Job not found");
+    if (!["needs_reconciliation", "confirming"].includes(job.status)) {
+      throw new ConvexError(
+        `Job is "${job.status}"; adminMarkPlaced repairs needs_reconciliation/confirming jobs`,
+      );
+    }
+    const now = Date.now();
+    const existingLedger = await ctx.db
+      .query("ledger")
+      .withIndex("by_job", (q) => q.eq("job_id", job._id))
+      .first();
+    if (!existingLedger) {
+      await ctx.db.insert("ledger", {
+        job_id: job._id,
+        store_id: job.store_id,
+        status: "placed",
+        total: args.total,
+        currency: "ARS",
+        order_ref: args.order_ref,
+        line_items: args.line_items,
+        placed_at: now,
+        created_at: now,
+        updated_at: now,
+      });
+    }
+    await patchJobStatus(
+      ctx,
+      job,
+      "done",
+      "admin-cli",
+      { order_ref: args.order_ref, error: undefined, lease_expires_at: undefined },
+      "Human verified the order was placed; records repaired",
+    );
+    const cart = await ctx.db.get(job.cart_id);
+    if (cart && cart.status !== "completed") {
+      await patchCartStatus(
+        ctx,
+        job.cart_id,
+        "completed",
+        "admin-cli",
+        "Order verified placed",
+      );
+    }
+    return { jobId: job._id, orderRef: args.order_ref };
+  },
+});
+
+/**
  * Admin repair (CLI only) for a false completion: a job marked done whose
  * order the store never actually placed (verified by a human against the
  * store's order history). Deletes the phantom ledger row, fails the job, and

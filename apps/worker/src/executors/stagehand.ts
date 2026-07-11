@@ -168,16 +168,66 @@ export class StagehandExecutor implements Executor {
         await this.clickFinalConfirm(session);
         await this.awaitOrderOutcome(session, 60000);
       }
+      await session.page.waitForTimeout(2000);
+
+      // Deterministic-first: the success page states the order plainly
+      // ("ORDEN: #48700 ¡Gracias por tu compra!"); read it directly instead
+      // of betting the verdict on an LLM extract racing a navigation.
+      const direct = (await session.page.evaluate(() => {
+        const text = (document.body?.innerText ?? "").replace(/\s+/g, " ");
+        const success =
+          /\/success/.test(location.pathname) ||
+          /gracias por tu compra|el pago fue confirmado/i.test(text);
+        const orderMatch = text.match(/orden:?\s*#?\s*(\d+)/i);
+        return { success, orderNumber: orderMatch ? orderMatch[1] : null };
+      })) as { success: boolean; orderNumber: string | null };
+
+      if (direct.success) {
+        console.log(
+          `[stagehand] success page detected (order #${direct.orderNumber ?? "?"})`,
+        );
+        let extracted: tiendanube.ReceiptExtract | null = null;
+        try {
+          extracted = await session.stagehand.extract(
+            tiendanube.extractInstructions.receipt,
+            tiendanube.receiptExtractSchema,
+          );
+        } catch (error) {
+          console.log(
+            `[stagehand] receipt enrichment extract failed (${error instanceof Error ? error.message : String(error)}); using cart data`,
+          );
+        }
+        const freshJob = await this.options.convex.getJob(job.jobId);
+        return {
+          orderRef: direct.orderNumber
+            ? `#${direct.orderNumber}`
+            : (extracted?.orderNumber ?? "unknown-check-store"),
+          total: extracted?.total ?? freshJob?.order_summary_total ?? 0,
+          currency: "ARS",
+          lineItems: extracted
+            ? extracted.lines.map((line) => ({
+                name: line.name,
+                qty: line.qty,
+                price: line.price,
+              }))
+            : work.cart.lines.map((line) => ({
+                name: line.store_item?.name ?? line.item_name,
+                qty: line.qty,
+                price: line.expected_unit_price ?? 0,
+              })),
+        };
+      }
+
+      // No deterministic success: fall back to the strict LLM judgement.
+      // Never report done off an ambiguous page — a rejected submit must end
+      // in needs_reconciliation, not a phantom ledger row.
       const receipt = await session.stagehand.extract(
         tiendanube.extractInstructions.receipt,
         tiendanube.receiptExtractSchema,
       );
-      // Never report done off an ambiguous page: a rejected submit (empty
-      // card form, validation error) leaves the checkout on screen, which
-      // must end in needs_reconciliation, not a phantom ledger row.
       if (!receipt.orderPlaced || !receipt.orderNumber) {
         throw new Error(
-          `Store did not confirm the order (orderPlaced=${receipt.orderPlaced}, orderNumber=${receipt.orderNumber ?? "none"}) — the confirm click likely did not go through (unfilled card form?). Check the browser over noVNC and the store's order history.`,
+          `Store did not confirm the order (orderPlaced=${receipt.orderPlaced}, orderNumber=${receipt.orderNumber ?? "none"}) — the confirm click likely did not go through. Check the browser over noVNC and the store's order history.`,
         );
       }
       return {
@@ -256,18 +306,26 @@ export class StagehandExecutor implements Executor {
             .normalize("NFD")
             .replace(/[̀-ͯ]/g, "")
             .toLowerCase();
+          // TN's success page is /checkout/v3/success/... — the URL check
+          // must look for the success segment, not for leaving /checkout
+          // (order #48700 was misreported failed exactly because of that).
           if (
-            /gracias por tu compra|pedido (fue )?(realizado|confirmado|recibido)|orden (creada|confirmada|recibida)|compra (realizada|exitosa)/.test(text) ||
+            /\/success/.test(location.pathname) ||
+            /gracias por tu compra|el pago fue confirmado|pedido (fue )?(realizado|confirmado|recibido)|orden (creada|confirmada|recibida)|compra (realizada|exitosa)/.test(text) ||
             !location.pathname.includes("/checkout")
           ) {
             return "confirmed";
           }
+          // No [role=alert]: this checkout marks its page header with it.
           for (const el of document.querySelectorAll<HTMLElement>(
-            "[class*=alert-danger], [class*=alert-error], [class*=has-error], [role=alert]",
+            "[class*=alert-danger], [class*=alert-error], [class*=has-error]",
           )) {
             if (el.offsetParent === null) continue;
             const errText = (el.textContent ?? "").replace(/\s+/g, " ").trim();
-            if (errText.length > 3 && !/rango horario|correo no deseado/i.test(errText)) {
+            if (
+              errText.length > 15 &&
+              !/rango horario|correo no deseado/i.test(errText)
+            ) {
               return "error: " + errText.slice(0, 140);
             }
           }
