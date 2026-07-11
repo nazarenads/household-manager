@@ -849,6 +849,25 @@ export const adminExpire = internalMutation({
       );
       return "requeued";
     }
+    // Only after a human verified in the store account that no order exists.
+    if (job.status === "needs_reconciliation") {
+      await patchJobStatus(
+        ctx,
+        job,
+        "failed",
+        "admin-cli",
+        { lease_expires_at: undefined },
+        "Human verified no order was placed; failing for requeue",
+      );
+      await patchCartStatus(
+        ctx,
+        job.cart_id,
+        "approved",
+        "admin-cli",
+        "Cart returned to approved after verified non-order",
+      );
+      return "failed";
+    }
     throw new ConvexError(`Job is "${job.status}"; nothing to expire`);
   },
 });

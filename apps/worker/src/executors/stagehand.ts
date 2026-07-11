@@ -156,10 +156,18 @@ export class StagehandExecutor implements Executor {
           "Card form is empty at confirm time and could not be auto-filled; complete it over noVNC",
         );
       }
-      const runner = this.runner(session, work.store._id);
-      await runner.runFlow("confirm", [tiendanube.confirmStep]);
-      // Let the submit round-trip settle before judging the outcome.
-      await session.page.waitForTimeout(4000);
+      await this.clickFinalConfirm(session);
+      const outcome = await this.awaitOrderOutcome(session, 40000);
+      if (outcome === "unchanged") {
+        // The page provably did not react (button still there, no spinner,
+        // no error, same URL) — the one situation where a single retry click
+        // cannot double-submit.
+        console.log(
+          "[stagehand] page unchanged after confirm click; retrying the click once",
+        );
+        await this.clickFinalConfirm(session);
+        await this.awaitOrderOutcome(session, 60000);
+      }
       const receipt = await session.stagehand.extract(
         tiendanube.extractInstructions.receipt,
         tiendanube.receiptExtractSchema,
@@ -191,6 +199,112 @@ export class StagehandExecutor implements Executor {
   async abort(job: PurchaseJobCtx): Promise<void> {
     void job;
     await this.options.browser.closeSession();
+  }
+
+  /**
+   * D13, deterministic: the final purchase click targets the visible submit
+   * button by class/text — never an LLM resolution or a cached xpath. (A
+   * cached absolute xpath from an older page layout once "clicked"
+   * successfully without ever hitting the real button.)
+   */
+  private async clickFinalConfirm(session: BrowserSession) {
+    const result = await session.page.evaluate(() => {
+      const candidates: HTMLElement[] = [];
+      for (const el of document.querySelectorAll<HTMLElement>(
+        "button, [class*=btn]",
+      )) {
+        if (el.offsetParent === null) continue;
+        const text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+        if (/^(realizar pedido|confirmar compra|pagar ahora|comprar)$/i.test(text)) {
+          candidates.push(el);
+        }
+      }
+      const preferred =
+        candidates.find((el) => `${el.className ?? ""}`.includes("btn-submit-step")) ??
+        candidates[0];
+      if (!preferred) return "not-found";
+      preferred.click();
+      return (preferred.textContent ?? "").replace(/\s+/g, " ").trim();
+    });
+    if (result === "not-found") {
+      throw new Error(
+        "Final purchase button not found on the page; nothing was clicked",
+      );
+    }
+    console.log(`[stagehand] final confirm clicked: "${result}"`);
+  }
+
+  /**
+   * Poll the page after the final click until it shows a confirmation, an
+   * error, or provably nothing (button still visible and enabled, no spinner,
+   * no error, still on checkout). "pending" states (button gone, spinner,
+   * navigation in flight) keep polling until the deadline.
+   */
+  private async awaitOrderOutcome(
+    session: BrowserSession,
+    timeoutMs: number,
+  ): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    let lastState = "pending";
+    let unchangedStreak = 0;
+    while (Date.now() < deadline) {
+      await session.page.waitForTimeout(2000);
+      let state: unknown = "pending";
+      try {
+        state = await session.page.evaluate(() => {
+          const text = (document.body?.innerText ?? "")
+            .normalize("NFD")
+            .replace(/[̀-ͯ]/g, "")
+            .toLowerCase();
+          if (
+            /gracias por tu compra|pedido (fue )?(realizado|confirmado|recibido)|orden (creada|confirmada|recibida)|compra (realizada|exitosa)/.test(text) ||
+            !location.pathname.includes("/checkout")
+          ) {
+            return "confirmed";
+          }
+          for (const el of document.querySelectorAll<HTMLElement>(
+            "[class*=alert-danger], [class*=alert-error], [class*=has-error], [role=alert]",
+          )) {
+            if (el.offsetParent === null) continue;
+            const errText = (el.textContent ?? "").replace(/\s+/g, " ").trim();
+            if (errText.length > 3 && !/rango horario|correo no deseado/i.test(errText)) {
+              return "error: " + errText.slice(0, 140);
+            }
+          }
+          const spinner = [...document.querySelectorAll<HTMLElement>(
+            "[class*=spinner], [class*=loading], [class*=processing]",
+          )].some((el) => el.offsetParent !== null);
+          if (spinner) return "pending";
+          const button = [
+            ...document.querySelectorAll<HTMLElement>("button, [class*=btn]"),
+          ].find(
+            (el) =>
+              el.offsetParent !== null &&
+              /^(realizar pedido|confirmar compra|pagar ahora|comprar)$/i.test(
+                (el.textContent ?? "").replace(/\s+/g, " ").trim(),
+              ),
+          );
+          return button ? "unchanged" : "pending";
+        });
+      } catch {
+        // Navigation in flight can kill the evaluate; that is progress.
+        state = "pending";
+      }
+      lastState = String(state);
+      if (lastState === "confirmed" || lastState.startsWith("error:")) {
+        console.log(`[stagehand] order outcome: ${lastState}`);
+        return lastState;
+      }
+      // Only declare "unchanged" after four consecutive quiet polls (~8s) —
+      // a slow submit can look unchanged for a beat before reacting.
+      unchangedStreak = lastState === "unchanged" ? unchangedStreak + 1 : 0;
+      if (unchangedStreak >= 4) {
+        console.log("[stagehand] order outcome: page provably unchanged");
+        return "unchanged";
+      }
+    }
+    console.log(`[stagehand] order outcome after timeout: ${lastState}`);
+    return lastState;
   }
 
   private assertSupportedPlatform(work: WorkContext) {

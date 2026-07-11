@@ -161,9 +161,6 @@ export function checkoutStartSteps(): StepTemplate[] {
   ];
 }
 
-/** The single final click (D13): executed once, after startConfirming. */
-export const confirmStep: StepTemplate = {
-  key: "confirm-purchase",
-  instruction:
-    "Click the final purchase confirmation button (usually 'Realizar pedido', 'Confirmar compra' or 'Pagar ahora'). Click it exactly once.",
-};
+// The final confirm click is deterministic worker code (StagehandExecutor.
+// clickFinalConfirm) — a cached xpath replay once "clicked" successfully
+// without hitting the real button, so no trajectory step exists for it.
