@@ -500,6 +500,7 @@ export const reachedSummary = mutation({
     ),
     summary_shipping_total: v.optional(v.number()),
     summary_delivery_window: v.optional(v.string()),
+    summary_payment_warning: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     requireWorkerToken(args);
@@ -535,6 +536,7 @@ export const reachedSummary = mutation({
         summary_line_items: args.summary_line_items,
         summary_shipping_total: args.summary_shipping_total,
         summary_delivery_window: args.summary_delivery_window,
+        summary_payment_warning: args.summary_payment_warning,
         summary_diff: summaryDiff,
         confirm_deadline: now + timeoutMs,
         lease_expires_at: undefined,
@@ -626,6 +628,14 @@ export const complete = mutation({
     if (!job) throw new ConvexError("Job not found");
     if (job.status !== "confirming") {
       throw new ConvexError("Job must be confirming before completion");
+    }
+    // A completion with no order reference is exactly how a rejected submit
+    // masquerades as success (the extractor reads totals off the still-open
+    // payment page). Refuse it; the worker reports needs_reconciliation.
+    if (!args.order_ref || args.order_ref.trim().length === 0) {
+      throw new ConvexError(
+        "Refusing completion without an order reference; use markNeedsReconciliation",
+      );
     }
     const now = Date.now();
     const existingLedger = await ctx.db
@@ -768,6 +778,69 @@ export const fail = mutation({
       args.worker_id,
       args.error,
     );
+  },
+});
+
+/**
+ * Admin repair (CLI only) for a false completion: a job marked done whose
+ * order the store never actually placed (verified by a human against the
+ * store's order history). Deletes the phantom ledger row, fails the job, and
+ * returns the cart to approved for a clean requeue. Deliberately bypasses the
+ * transition guards — done/completed are terminal for machines, and this is
+ * the human override.
+ *
+ *   npx convex run jobs:repairFalseCompletion '{"job_id":"..."}'
+ */
+export const repairFalseCompletion = internalMutation({
+  args: { job_id: v.id("purchase_jobs") },
+  handler: async (ctx, args) => {
+    const job = await ctx.db.get(args.job_id);
+    if (!job) throw new ConvexError("Job not found");
+    if (job.status !== "done") {
+      throw new ConvexError(
+        `Job is "${job.status}", not "done" — nothing to repair`,
+      );
+    }
+    const now = Date.now();
+    const ledgerRows = await ctx.db
+      .query("ledger")
+      .withIndex("by_job", (q) => q.eq("job_id", job._id))
+      .collect();
+    for (const row of ledgerRows) {
+      await ctx.db.delete(row._id);
+    }
+    await ctx.db.patch(job._id, {
+      status: "failed",
+      error:
+        "False completion repaired by admin: the store never placed this order",
+      order_ref: undefined,
+      updated_at: now,
+    } as any);
+    await ctx.db.insert("job_events", {
+      job_id: job._id,
+      from_status: "done",
+      to_status: "failed",
+      actor: "admin-repair",
+      note: "Phantom completion reverted; ledger row(s) deleted",
+      created_at: now,
+    });
+    const cart = await ctx.db.get(job.cart_id);
+    if (cart && cart.status === "completed") {
+      await ctx.db.patch(cart._id, { status: "approved", updated_at: now });
+      await ctx.db.insert("cart_events", {
+        cart_id: cart._id,
+        from_status: "completed",
+        to_status: "approved",
+        actor: "admin-repair",
+        note: "Returned to approved after false completion repair",
+        created_at: now,
+      });
+    }
+    return {
+      jobId: job._id,
+      deletedLedgerRows: ledgerRows.length,
+      cartStatus: cart ? "approved" : "missing",
+    };
   },
 });
 

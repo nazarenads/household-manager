@@ -191,6 +191,91 @@ describe("confirm handshake", () => {
     expect(confirmed?.status).toBe("confirmed");
   });
 
+  test("completion without an order reference is refused (phantom-order guard)", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seed(t);
+    const jobId = await queueAndClaim(t, seeded);
+    await t.mutation(api.jobs.reachedSummary, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+      order_summary_total: 300,
+      order_summary_currency: "ARS",
+      summary_line_items: summaryLines(seeded),
+    });
+    await t.mutation(api.jobs.confirm, { job_id: jobId });
+    await t.mutation(api.jobs.startConfirming, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+    });
+    await expect(
+      t.mutation(api.jobs.complete, {
+        workerToken: WORKER_TOKEN,
+        job_id: jobId,
+        worker_id: WORKER_ID,
+        total: 300,
+        currency: "ARS",
+        line_items: [{ name: "Yerba", qty: 2, price: 100 }],
+      }),
+    ).rejects.toThrow(/order reference/);
+    const job = await t.run((ctx) => ctx.db.get(jobId));
+    expect(job?.status).toBe("confirming");
+    const ledger = await t.run((ctx) =>
+      ctx.db
+        .query("ledger")
+        .withIndex("by_job", (q) => q.eq("job_id", jobId))
+        .first(),
+    );
+    expect(ledger).toBeNull();
+  });
+
+  test("repairFalseCompletion reverts a phantom done job", async () => {
+    const t = convexTest(schema, modules);
+    const seeded = await seed(t);
+    const jobId = await queueAndClaim(t, seeded);
+    await t.mutation(api.jobs.reachedSummary, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+      order_summary_total: 300,
+      order_summary_currency: "ARS",
+      summary_line_items: summaryLines(seeded),
+    });
+    await t.mutation(api.jobs.confirm, { job_id: jobId });
+    await t.mutation(api.jobs.startConfirming, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+    });
+    await t.mutation(api.jobs.complete, {
+      workerToken: WORKER_TOKEN,
+      job_id: jobId,
+      worker_id: WORKER_ID,
+      order_ref: "PHANTOM-1",
+      total: 300,
+      currency: "ARS",
+      line_items: [{ name: "Yerba", qty: 2, price: 100 }],
+    });
+
+    const result = await t.mutation(internal.jobs.repairFalseCompletion, {
+      job_id: jobId,
+    });
+    expect(result.deletedLedgerRows).toBe(1);
+    const job = await t.run((ctx) => ctx.db.get(jobId));
+    expect(job?.status).toBe("failed");
+    expect(job?.order_ref).toBeUndefined();
+    const cart = await t.run((ctx) => ctx.db.get(seeded.cartId));
+    expect(cart?.status).toBe("approved");
+    const ledger = await t.run((ctx) =>
+      ctx.db
+        .query("ledger")
+        .withIndex("by_job", (q) => q.eq("job_id", jobId))
+        .first(),
+    );
+    expect(ledger).toBeNull();
+  });
+
   test("a cart cannot be queued twice", async () => {
     const t = convexTest(schema, modules);
     const seeded = await seed(t);

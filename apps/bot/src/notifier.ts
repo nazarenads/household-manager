@@ -143,8 +143,11 @@ export function startNotifier(
         const deadline = job.confirm_deadline
           ? `\nConfirm by: ${new Date(job.confirm_deadline).toLocaleString()}`
           : "";
+        const paymentWarning = job.summary_payment_warning
+          ? `\n💳⚠️ ${job.summary_payment_warning}`
+          : "";
 
-        message = `${storeName}\nOrder ready to confirm${total}${delivery}${deadline}`;
+        message = `${storeName}\nOrder ready to confirm${total}${delivery}${deadline}${paymentWarning}`;
 
         if (
           job.summary_diff &&

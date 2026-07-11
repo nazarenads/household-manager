@@ -40,6 +40,8 @@ export const summaryResultSchema = z.object({
   lineItems: z.array(summaryLineItemSchema),
   shippingTotal: z.number().nonnegative().optional(),
   deliveryWindow: z.string().optional(),
+  /** Set when the checkout demands card data the worker could not auto-fill. */
+  paymentWarning: z.string().optional(),
   redactionApplied: z.boolean(),
   diff: z
     .object({

@@ -46,6 +46,11 @@ export const summaryExtractSchema = z.object({
 export type SummaryExtract = z.infer<typeof summaryExtractSchema>;
 
 export const receiptExtractSchema = z.object({
+  orderPlaced: z
+    .boolean()
+    .describe(
+      "True ONLY if the page explicitly confirms the order was created (a thank-you/confirmation page, an order number, 'tu pedido fue realizado'). False if the page still shows a payment form, the checkout summary, validation errors, or anything ambiguous.",
+    ),
   orderNumber: z
     .string()
     .optional()
@@ -84,7 +89,7 @@ export const extractInstructions = {
   summary:
     "Extract the order summary: every product line with name, quantity, unit price and line total, plus the shipping cost, the delivery window if shown, and the order total. Mark a line 'unavailable' if it is flagged out of stock, 'substituted' if the store replaced it.",
   receipt:
-    "Extract the purchase confirmation: the order or confirmation number and the final charged total, plus the purchased lines with name, quantity, and price.",
+    "Determine whether this page explicitly confirms that an order was just placed (thank-you page, order number, 'tu pedido fue realizado'). Set orderPlaced accordingly — it is false if the page still shows a payment form, card-data fields, the checkout summary, or any validation error. Then extract the order/confirmation number and the final charged total, plus the purchased lines with name, quantity, and price.",
 } as const;
 
 // Tienda Nube's cart page lives at /comprar; /cart renders the 404 template.

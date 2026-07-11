@@ -6,7 +6,7 @@ import type { WorkerSecrets } from "../secrets";
 import { actOrThrow } from "../act";
 import { TrajectoryRunner } from "../trajectory";
 import { captureRedactedScreenshot } from "../screenshot";
-import { fillPaymentIfPresent } from "../payment";
+import { fillPaymentIfPresent, paymentWarningFor } from "../payment";
 import * as tiendanube from "../flows/tiendanube";
 import {
   ExecutorLimitError,
@@ -83,8 +83,12 @@ export class StagehandExecutor implements Executor {
       await this.assertLoggedIn(session, work);
       await this.buildCart(session, work);
       await this.reconcileCartQuantities(session, work);
-      await this.checkoutToSummary(session, job);
+      const fill = await this.checkoutToSummary(session, job);
       const summary = await this.extractSummary(session, work);
+      summary.paymentWarning = paymentWarningFor(fill);
+      if (summary.paymentWarning) {
+        console.log(`[stagehand] payment warning: ${summary.paymentWarning}`);
+      }
       console.log(
         `[stagehand] summary reached for job ${job.jobId}; LLM tokens this run: ${
           (await session.stagehand.metrics).totalPromptTokens -
@@ -111,10 +115,20 @@ export class StagehandExecutor implements Executor {
       );
       const runner = this.runner(session, work.store._id);
       await runner.runFlow("confirm", [tiendanube.confirmStep]);
+      // Let the submit round-trip settle before judging the outcome.
+      await session.page.waitForTimeout(4000);
       const receipt = await session.stagehand.extract(
         tiendanube.extractInstructions.receipt,
         tiendanube.receiptExtractSchema,
       );
+      // Never report done off an ambiguous page: a rejected submit (empty
+      // card form, validation error) leaves the checkout on screen, which
+      // must end in needs_reconciliation, not a phantom ledger row.
+      if (!receipt.orderPlaced || !receipt.orderNumber) {
+        throw new Error(
+          `Store did not confirm the order (orderPlaced=${receipt.orderPlaced}, orderNumber=${receipt.orderNumber ?? "none"}) — the confirm click likely did not go through (unfilled card form?). Check the browser over noVNC and the store's order history.`,
+        );
+      }
       return {
         orderRef: receipt.orderNumber,
         total: receipt.total,
@@ -389,6 +403,7 @@ export class StagehandExecutor implements Executor {
         `[stagehand] deterministic payment fill: ${fill.filledFields.join(", ")}`,
       );
     }
+    return fill;
   }
 
   /**

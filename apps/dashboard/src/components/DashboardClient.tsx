@@ -77,6 +77,7 @@ type Job = {
   }>;
   summary_shipping_total?: number;
   summary_delivery_window?: string;
+  summary_payment_warning?: string;
   delivery_options?: string[];
   chosen_delivery_option?: string;
   delivery_choice_deadline?: number;
@@ -955,6 +956,11 @@ function DashboardApp() {
                             ? `Confirm by ${formatDate(job.confirm_deadline)}`
                             : ""}
                         </div>
+                        {job.summary_payment_warning ? (
+                          <div className="diff-warning">
+                            💳 {job.summary_payment_warning}
+                          </div>
+                        ) : null}
                         {job.summary_diff && !job.summary_diff.withinPolicy ? (
                           <div className="diff-warning">
                             {job.summary_diff.issues.map((issue, idx) => (

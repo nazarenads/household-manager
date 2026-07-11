@@ -152,6 +152,7 @@ export class HarnessExecutor implements Executor {
     const prompt = [
       "The order summary for a household purchase is on screen in the already-open browser, and the human has approved placing the order.",
       "Click the final purchase confirmation button ('Confirmar compra', 'Pagar ahora' or similar) EXACTLY ONCE, wait for the confirmation page, then report the order number and charged total as JSON matching the output schema.",
+      "Set orderPlaced=true ONLY if the store explicitly confirms the order was created (thank-you page, order number). If the page still shows a payment form, the summary, or an error, set orderPlaced=false.",
       "If something blocks the confirmation (captcha, payment form demanding card data, error), do not retry clicking; set the `blocked` field instead.",
     ].join("\n");
 
@@ -165,6 +166,11 @@ export class HarnessExecutor implements Executor {
       // The final click may or may not have landed — treat as unknown
       // outcome upstream (needs_reconciliation), never re-click.
       throw new Error(`Harness blocked during confirm: ${parsed.blocked}`);
+    }
+    if (!parsed.orderPlaced || !parsed.orderNumber) {
+      throw new Error(
+        `Store did not confirm the order (orderPlaced=${parsed.orderPlaced}, orderNumber=${parsed.orderNumber ?? "none"}); check the store's order history before doing anything.`,
+      );
     }
     return {
       orderRef: parsed.orderNumber,
