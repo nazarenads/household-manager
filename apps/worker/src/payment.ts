@@ -109,7 +109,9 @@ function buildFillExpression(specs: FieldSpec[]) {
       }
       if (!input) continue;
       seen = true;
-      if ((input.value || "").length > 0 && spec.field !== "number") {
+      // Always overwrite: the store pre-fills some fields from the customer
+      // profile with wrong data (e.g. CUIL where the gateway wants DNI).
+      if (input.value === spec.value) {
         filled.push(spec.field);
         continue;
       }
