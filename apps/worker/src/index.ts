@@ -184,6 +184,7 @@ async function main() {
         summary_shipping_total: summary.shippingTotal,
         summary_delivery_window: summary.deliveryWindow,
         summary_payment_warning: summary.paymentWarning,
+        summary_delivery_warning: summary.deliveryWarning,
       });
       console.log(
         `[worker] job ${claimed._id} awaiting confirmation (total ${summary.total})`,

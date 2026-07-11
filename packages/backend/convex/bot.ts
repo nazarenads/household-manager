@@ -468,6 +468,7 @@ export const jobs = query({
           summary_shipping_total: job.summary_shipping_total,
           summary_delivery_window: job.summary_delivery_window,
           summary_payment_warning: job.summary_payment_warning,
+          summary_delivery_warning: job.summary_delivery_warning,
           delivery_options: job.delivery_options,
           chosen_delivery_option: job.chosen_delivery_option,
           delivery_choice_deadline: job.delivery_choice_deadline,

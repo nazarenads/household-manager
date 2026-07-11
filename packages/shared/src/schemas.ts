@@ -42,6 +42,8 @@ export const summaryResultSchema = z.object({
   deliveryWindow: z.string().optional(),
   /** Set when the checkout demands card data the worker could not auto-fill. */
   paymentWarning: z.string().optional(),
+  /** Set when the chosen delivery date could not be verified on the page. */
+  deliveryWarning: z.string().optional(),
   redactionApplied: z.boolean(),
   diff: z
     .object({

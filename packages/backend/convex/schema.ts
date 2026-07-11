@@ -159,6 +159,7 @@ export default defineSchema({
     summary_shipping_total: v.optional(v.number()),
     summary_delivery_window: v.optional(v.string()),
     summary_payment_warning: v.optional(v.string()),
+    summary_delivery_warning: v.optional(v.string()),
     summary_diff: v.optional(v.any()),
     confirm_deadline: v.optional(v.number()),
     confirmed_by: v.optional(v.string()),

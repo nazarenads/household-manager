@@ -501,6 +501,7 @@ export const reachedSummary = mutation({
     summary_shipping_total: v.optional(v.number()),
     summary_delivery_window: v.optional(v.string()),
     summary_payment_warning: v.optional(v.string()),
+    summary_delivery_warning: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     requireWorkerToken(args);
@@ -537,6 +538,7 @@ export const reachedSummary = mutation({
         summary_shipping_total: args.summary_shipping_total,
         summary_delivery_window: args.summary_delivery_window,
         summary_payment_warning: args.summary_payment_warning,
+        summary_delivery_warning: args.summary_delivery_warning,
         summary_diff: summaryDiff,
         confirm_deadline: now + timeoutMs,
         lease_expires_at: undefined,

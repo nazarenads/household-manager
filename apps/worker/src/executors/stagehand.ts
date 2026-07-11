@@ -83,11 +83,23 @@ export class StagehandExecutor implements Executor {
       await this.assertLoggedIn(session, work);
       await this.buildCart(session, work);
       await this.reconcileCartQuantities(session, work);
-      const fill = await this.checkoutToSummary(session, job);
+      const { fill, delivery } = await this.checkoutToSummary(session, job);
       const summary = await this.extractSummary(session, work);
       summary.paymentWarning = paymentWarningFor(fill);
       if (summary.paymentWarning) {
         console.log(`[stagehand] payment warning: ${summary.paymentWarning}`);
+      }
+      summary.deliveryWarning = delivery.warning;
+      if (
+        !summary.deliveryWarning &&
+        delivery.chosen &&
+        summary.deliveryWindow &&
+        !this.deliveryMatches(summary.deliveryWindow, delivery.chosen)
+      ) {
+        summary.deliveryWarning = `You chose "${delivery.chosen}" but the order summary shows "${summary.deliveryWindow}" — fix it over noVNC or let this expire.`;
+      }
+      if (summary.deliveryWarning) {
+        console.log(`[stagehand] delivery warning: ${summary.deliveryWarning}`);
       }
       console.log(
         `[stagehand] summary reached for job ${job.jobId}; LLM tokens this run: ${
@@ -388,7 +400,7 @@ export class StagehandExecutor implements Executor {
       "choose_shipping",
       tiendanube.chooseShippingSteps(work.store.shipping_preference),
     );
-    await this.resolveDeliveryDate(session, job);
+    const delivery = await this.resolveDeliveryDate(session, job);
     await runner.runFlow(
       "continue_to_payment",
       tiendanube.continueToPaymentSteps(),
@@ -403,14 +415,16 @@ export class StagehandExecutor implements Executor {
         `[stagehand] deterministic payment fill: ${fill.filledFields.join(", ")}`,
       );
     }
-    return fill;
+    return { fill, delivery };
   }
 
   /**
    * Click the element whose surrounding text matches `needle` — first radios
    * (climbing to the text-bearing ancestor, same trick as the cart rows),
-   * then clickable elements carrying the text themselves. Deterministic and
-   * free; returns how it matched, or "not-found".
+   * then clickable elements carrying the text themselves. Among matches the
+   * one with the SHORTEST matching text wins: a list container holds every
+   * option's text, so without this the first radio in DOM order would match
+   * any needle (that is exactly how run 1 picked the wrong delivery date).
    */
   private async clickByText(
     session: BrowserSession,
@@ -418,6 +432,8 @@ export class StagehandExecutor implements Executor {
   ): Promise<string> {
     const result = await session.page.evaluate(
       (target: string) => {
+        let bestRadio: HTMLElement | null = null;
+        let bestRadioLen = 600;
         for (const radio of [
           ...document.querySelectorAll("input[type=radio]"),
         ]) {
@@ -429,13 +445,22 @@ export class StagehandExecutor implements Executor {
               .toLowerCase()
               .replace(/\s+/g, " ")
               .trim();
-            if (text.length < 600 && text.includes(target)) {
-              (radio as HTMLElement).click();
-              return "radio";
+            if (text.includes(target)) {
+              if (text.length < bestRadioLen) {
+                bestRadioLen = text.length;
+                bestRadio = radio as HTMLElement;
+              }
+              break; // closest matching ancestor found for this radio
             }
             node = node.parentElement;
           }
         }
+        if (bestRadio) {
+          bestRadio.click();
+          return "radio";
+        }
+        let bestEl: HTMLElement | null = null;
+        let bestElLen = 300;
         for (const el of [
           ...document.querySelectorAll("label, button, a, [role=button]"),
         ]) {
@@ -446,13 +471,17 @@ export class StagehandExecutor implements Executor {
             .replace(/\s+/g, " ")
             .trim();
           if (
-            text.length < 300 &&
             text.includes(target) &&
+            text.length < bestElLen &&
             (el as HTMLElement).offsetParent !== null
           ) {
-            (el as HTMLElement).click();
-            return "element";
+            bestElLen = text.length;
+            bestEl = el as HTMLElement;
           }
+        }
+        if (bestEl) {
+          bestEl.click();
+          return "element";
         }
         return "not-found";
       },
@@ -482,21 +511,14 @@ export class StagehandExecutor implements Executor {
   }
 
   /**
-   * The delivery-date gate. Extract the offered dates, park the job as
-   * awaiting_delivery_choice for a human pick (Telegram/dashboard), default
-   * to the earliest option if nobody answers in time, then select the chosen
-   * option on the page. On a captcha-resume rerun the stored choice is reused
-   * without re-asking.
+   * The date widget loads via AJAX after the shipping step renders; a cached
+   * replay reaches this point much faster than the exploratory first run, so
+   * an immediate extract sees no options (run 2 skipped the gate exactly this
+   * way). Settle, extract, and retry before concluding there is no choice.
    */
-  private async resolveDeliveryDate(
-    session: BrowserSession,
-    job: PurchaseJobCtx,
-  ) {
-    const { work } = job;
-    const freshJob = await this.options.convex.getJob(job.jobId);
-    let chosen = freshJob?.chosen_delivery_option;
-
-    if (!chosen) {
+  private async extractDeliveryOptions(session: BrowserSession) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await session.page.waitForTimeout(attempt === 0 ? 2000 : 3000);
       const extracted = await session.stagehand.extract(
         tiendanube.extractInstructions.deliveryOptions,
         tiendanube.deliveryOptionsSchema,
@@ -505,9 +527,62 @@ export class StagehandExecutor implements Executor {
         .map((option) => option.trim())
         .filter((option) => option.length > 0)
         .slice(0, MAX_DELIVERY_OPTIONS);
+      if (options.length > 0) {
+        return { options, selected: extracted.selected?.trim() };
+      }
+      console.log(
+        `[stagehand] no delivery options visible yet (attempt ${attempt + 1}/3)`,
+      );
+    }
+    return { options: [] as string[], selected: undefined };
+  }
+
+  private deliveryMatches(a: string | undefined, b: string | undefined) {
+    if (!a || !b) return false;
+    const left = normalizeForPageMatch(a);
+    const right = normalizeForPageMatch(b);
+    return (
+      left.length > 0 &&
+      right.length > 0 &&
+      (left.includes(right) || right.includes(left))
+    );
+  }
+
+  /** Ask the page which option is selected now; the click must have taken. */
+  private async verifyDeliverySelected(
+    session: BrowserSession,
+    chosen: string,
+  ): Promise<boolean> {
+    const check = await session.stagehand.extract(
+      "Which delivery date/window option is currently selected/checked on this checkout step? Also list all offered options.",
+      tiendanube.deliveryOptionsSchema,
+    );
+    return this.deliveryMatches(check.selected, chosen);
+  }
+
+  /**
+   * The delivery-date gate. Extract the offered dates, park the job as
+   * awaiting_delivery_choice for a human pick (Telegram/dashboard), default
+   * to the earliest option if nobody answers in time, then select the chosen
+   * option on the page and VERIFY the widget registered it (run 1 clicked a
+   * matching but inert element and the store silently kept its default). On
+   * a captcha-resume rerun the stored choice is reused without re-asking.
+   * Returns the choice and a human-facing warning when verification failed.
+   */
+  private async resolveDeliveryDate(
+    session: BrowserSession,
+    job: PurchaseJobCtx,
+  ): Promise<{ chosen?: string; warning?: string }> {
+    const freshJob = await this.options.convex.getJob(job.jobId);
+    let chosen = freshJob?.chosen_delivery_option;
+    let alreadySelected: string | undefined;
+
+    if (!chosen) {
+      const { options, selected } = await this.extractDeliveryOptions(session);
+      alreadySelected = selected;
       if (options.length === 0) {
         console.log("[stagehand] no delivery date choice on this checkout");
-        return;
+        return {};
       }
       if (options.length === 1) {
         chosen = options[0]!;
@@ -540,29 +615,40 @@ export class StagehandExecutor implements Executor {
         }
         chosen = decision.chosen_delivery_option;
       }
-      if (extracted.selected && chosen === extracted.selected.trim()) {
-        console.log(
-          `[stagehand] delivery option already selected: ${chosen}`,
-        );
-        return;
-      }
+    }
+
+    if (this.deliveryMatches(alreadySelected, chosen)) {
+      console.log(`[stagehand] delivery option already selected: ${chosen}`);
+      return { chosen };
     }
 
     const outcome = await this.clickByText(session, chosen);
-    if (outcome === "not-found") {
-      console.log(
-        `[stagehand] deterministic click missed "${chosen}"; falling back to LLM act`,
-      );
-      await actOrThrow(
-        session.stagehand,
-        tiendanube.selectDeliveryOptionInstruction(chosen),
-      );
-    } else {
-      console.log(
-        `[stagehand] selected delivery option "${chosen}" via ${outcome}`,
-      );
+    console.log(
+      `[stagehand] delivery option click for "${chosen}": ${outcome}`,
+    );
+    await session.page.waitForTimeout(2000);
+    if (await this.verifyDeliverySelected(session, chosen)) {
+      console.log(`[stagehand] verified delivery option: ${chosen}`);
+      return { chosen };
     }
-    await session.page.waitForTimeout(1500);
+
+    console.log(
+      `[stagehand] "${chosen}" not registered after deterministic click; falling back to LLM act`,
+    );
+    await actOrThrow(
+      session.stagehand,
+      tiendanube.selectDeliveryOptionInstruction(chosen),
+    );
+    await session.page.waitForTimeout(2000);
+    if (await this.verifyDeliverySelected(session, chosen)) {
+      console.log(`[stagehand] verified delivery option after heal: ${chosen}`);
+      return { chosen };
+    }
+
+    return {
+      chosen,
+      warning: `Could not verify that the chosen delivery date ("${chosen}") registered on the store page — check the delivery date on the summary before confirming.`,
+    };
   }
 
   private async extractSummary(

@@ -78,6 +78,7 @@ type Job = {
   summary_shipping_total?: number;
   summary_delivery_window?: string;
   summary_payment_warning?: string;
+  summary_delivery_warning?: string;
   delivery_options?: string[];
   chosen_delivery_option?: string;
   delivery_choice_deadline?: number;
@@ -959,6 +960,11 @@ function DashboardApp() {
                         {job.summary_payment_warning ? (
                           <div className="diff-warning">
                             💳 {job.summary_payment_warning}
+                          </div>
+                        ) : null}
+                        {job.summary_delivery_warning ? (
+                          <div className="diff-warning">
+                            📅 {job.summary_delivery_warning}
                           </div>
                         ) : null}
                         {job.summary_diff && !job.summary_diff.withinPolicy ? (

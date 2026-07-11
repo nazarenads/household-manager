@@ -146,8 +146,11 @@ export function startNotifier(
         const paymentWarning = job.summary_payment_warning
           ? `\n💳⚠️ ${job.summary_payment_warning}`
           : "";
+        const deliveryWarning = job.summary_delivery_warning
+          ? `\n📅⚠️ ${job.summary_delivery_warning}`
+          : "";
 
-        message = `${storeName}\nOrder ready to confirm${total}${delivery}${deadline}${paymentWarning}`;
+        message = `${storeName}\nOrder ready to confirm${total}${delivery}${deadline}${paymentWarning}${deliveryWarning}`;
 
         if (
           job.summary_diff &&

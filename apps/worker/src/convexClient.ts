@@ -32,6 +32,7 @@ export type SummaryPayload = {
   summary_shipping_total?: number | undefined;
   summary_delivery_window?: string | undefined;
   summary_payment_warning?: string | undefined;
+  summary_delivery_warning?: string | undefined;
 };
 
 export type ReceiptPayload = {
