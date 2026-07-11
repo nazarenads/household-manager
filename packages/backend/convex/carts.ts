@@ -135,6 +135,22 @@ export const cancel = mutation({
   },
 });
 
+// CLI admin variant, e.g. npx convex run carts:cancelFromCli '{"cart_id":"..."}'
+export const cancelFromCli = internalMutation({
+  args: { cart_id: v.id("carts"), note: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const cart = await ctx.db.get(args.cart_id);
+    if (!cart) throw new ConvexError("Cart not found");
+    await patchCartStatus(
+      ctx,
+      cart,
+      "cancelled",
+      "admin-cli",
+      args.note ?? "Cancelled from CLI",
+    );
+  },
+});
+
 async function queueCartJob(
   ctx: MutationCtx,
   cart: Doc<"carts">,
