@@ -35,6 +35,73 @@ export const updateByLoginRef = internalMutation({
   },
 });
 
+// Delete a store row that was accidentally duplicated (login_ref lookups use
+// .unique() and break while the duplicate exists), e.g.:
+//   npx convex run stores:removeDuplicate '{"id":"<dup id>","reassignTo":"<real id>"}'
+// Items preferring the duplicate are repointed to reassignTo; any other
+// reference (store_items, carts, jobs, ledger, trajectories) aborts the
+// delete, because those tables carry history that must not dangle.
+export const removeDuplicate = internalMutation({
+  args: {
+    id: v.id("stores"),
+    reassignTo: v.optional(v.id("stores")),
+  },
+  handler: async (ctx, args) => {
+    const store = await ctx.db.get(args.id);
+    if (!store) throw new Error(`No store ${args.id}`);
+    if (args.reassignTo !== undefined) {
+      const target = await ctx.db.get(args.reassignTo);
+      if (!target) throw new Error(`No store ${args.reassignTo}`);
+      if (target.login_ref !== store.login_ref) {
+        throw new Error(
+          `reassignTo login_ref "${target.login_ref}" does not match "${store.login_ref}"`,
+        );
+      }
+    }
+
+    for (const table of [
+      "store_items",
+      "carts",
+      "purchase_jobs",
+      "ledger",
+      "trajectories",
+    ] as const) {
+      const ref = await ctx.db
+        .query(table)
+        .filter((q) => q.eq(q.field("store_id"), args.id))
+        .first();
+      if (ref) {
+        throw new Error(
+          `Refusing to delete: ${table} row ${ref._id} references store ${args.id}`,
+        );
+      }
+    }
+
+    const preferring = await ctx.db
+      .query("items")
+      .filter((q) => q.eq(q.field("preferred_store_id"), args.id))
+      .collect();
+    if (preferring.length > 0 && args.reassignTo === undefined) {
+      throw new Error(
+        `${preferring.length} item(s) prefer store ${args.id}; pass reassignTo`,
+      );
+    }
+    for (const item of preferring) {
+      await ctx.db.patch(item._id, {
+        preferred_store_id: args.reassignTo,
+        updated_at: Date.now(),
+      });
+    }
+
+    await ctx.db.delete(args.id);
+    return {
+      deleted: args.id,
+      name: store.name,
+      itemsRepointed: preferring.length,
+    };
+  },
+});
+
 export const list = query({
   args: { includeInactive: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
