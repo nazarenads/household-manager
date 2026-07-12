@@ -48,7 +48,9 @@ export const deactivateFromCli = internalMutation({
  */
 export const seedFromCli = internalMutation({
   args: {
-    store_login_ref: v.string(),
+    // Omit for items whose store does not exist yet (stock-trackable only;
+    // the reorder cron skips items without a preferred store).
+    store_login_ref: v.optional(v.string()),
     items: v.array(
       v.object({
         name: v.string(),
@@ -57,18 +59,23 @@ export const seedFromCli = internalMutation({
         unit: v.string(),
         reorder_point: v.number(),
         reorder_to: v.number(),
-        store_item_name: v.string(),
+        // Set to record what is at home right now (writes a reconciliation
+        // stock event) so seeding does not instantly propose everything.
+        initial_stock: v.optional(v.number()),
+        store_item_name: v.optional(v.string()),
         product_url: v.optional(v.string()),
-        search_terms: v.array(v.string()),
+        search_terms: v.optional(v.array(v.string())),
         last_seen_price: v.optional(v.number()),
       }),
     ),
   },
   handler: async (ctx, args) => {
-    const store = (await ctx.db.query("stores").collect()).find(
-      (doc) => doc.login_ref === args.store_login_ref,
-    );
-    if (!store) {
+    const store = args.store_login_ref
+      ? (await ctx.db.query("stores").collect()).find(
+          (doc) => doc.login_ref === args.store_login_ref,
+        )
+      : undefined;
+    if (args.store_login_ref && !store) {
       throw new ConvexError(`No store with login_ref "${args.store_login_ref}"`);
     }
     const existing = await ctx.db.query("items").collect();
@@ -91,25 +98,37 @@ export const seedFromCli = internalMutation({
         unit: entry.unit,
         reorder_point: entry.reorder_point,
         reorder_to: entry.reorder_to,
-        preferred_store_id: store._id,
+        ...(store ? { preferred_store_id: store._id } : {}),
         substitute_item_ids: [],
         active: true,
         created_at: now,
         updated_at: now,
       });
-      await ctx.db.insert("store_items", {
-        item_id: itemId,
-        store_id: store._id,
-        name: entry.store_item_name,
-        ...(entry.product_url ? { product_url: entry.product_url } : {}),
-        search_terms: entry.search_terms,
-        ...(entry.last_seen_price !== undefined
-          ? { last_seen_price: entry.last_seen_price }
-          : {}),
-        active: true,
-        created_at: now,
-        updated_at: now,
-      });
+      if (store) {
+        await ctx.db.insert("store_items", {
+          item_id: itemId,
+          store_id: store._id,
+          name: entry.store_item_name ?? entry.name,
+          ...(entry.product_url ? { product_url: entry.product_url } : {}),
+          search_terms: entry.search_terms ?? [],
+          ...(entry.last_seen_price !== undefined
+            ? { last_seen_price: entry.last_seen_price }
+            : {}),
+          active: true,
+          created_at: now,
+          updated_at: now,
+        });
+      }
+      if (entry.initial_stock !== undefined && entry.initial_stock > 0) {
+        await ctx.db.insert("stock_events", {
+          item_id: itemId,
+          delta: entry.initial_stock,
+          reason: "reconciliation",
+          source_user: "admin-cli",
+          note: "Initial stock at seeding",
+          created_at: now,
+        });
+      }
       created.push(entry.name);
     }
     return { created, skipped };

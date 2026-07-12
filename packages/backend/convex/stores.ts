@@ -102,6 +102,46 @@ export const removeDuplicate = internalMutation({
   },
 });
 
+// CLI admin: create a store record, e.g. for the remaining Tienda Nube shops.
+export const createFromCli = internalMutation({
+  args: {
+    name: v.string(),
+    platform: v.union(
+      v.literal("tiendanube"),
+      v.literal("mercadolibre"),
+      v.literal("coto"),
+      v.literal("vtex"),
+    ),
+    domain: v.string(),
+    login_ref: v.string(),
+    shipping_preference: v.optional(v.string()),
+    delivery_address: v.optional(v.string()),
+    active: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const clash = (await ctx.db.query("stores").collect()).find(
+      (doc) => doc.login_ref === args.login_ref,
+    );
+    if (clash) throw new Error(`Store login_ref "${args.login_ref}" exists`);
+    const now = Date.now();
+    const storeId = await ctx.db.insert("stores", {
+      name: args.name,
+      platform: args.platform,
+      domain: args.domain,
+      login_ref: args.login_ref,
+      proxy_policy: args.platform === "tiendanube" ? "none" : "if_challenged",
+      shipping_preference: args.shipping_preference ?? "default",
+      ...(args.delivery_address
+        ? { delivery_address: args.delivery_address }
+        : {}),
+      active: args.active ?? true,
+      created_at: now,
+      updated_at: now,
+    });
+    return { storeId, name: args.name };
+  },
+});
+
 export const list = query({
   args: { includeInactive: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
